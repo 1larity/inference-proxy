@@ -1,0 +1,96 @@
+# inference-proxy configuration
+# Copy to config.yaml and fill in your keys. ${VAR} references are expanded
+# from the environment; use ${VAR:-fallback} for defaults.
+
+server:
+  host: 127.0.0.1
+  port: 8480
+  # Optional: require clients to send Authorization: Bearer <key> to the proxy.
+  api_key: null
+  # Optional: remember account cooldowns across restarts.
+  state_file: proxy-state.json
+  # Admin UI edits persist here as an overlay merged over this file.
+  # Set to null to disable the UI's persisted settings.
+  settings_file: ui-settings.json
+
+classifier:
+  # Local LM Studio / llama.cpp server used to judge task difficulty.
+  base_url: http://127.0.0.1:1234/v1
+  model: qwen3.5          # the model id as served locally
+  api_key: null           # LM Studio ignores keys; llama.cpp may want one
+  timeout_seconds: 15
+  max_chars: 6000         # transcript truncation before judging
+  # Oversized-prompt guard: prompts above oversize_ratio of the judge's
+  # context skip the LLM judge (unreliable + overflow risk) and route via
+  # the length heuristic, floored at routing.moderate_min. The context size
+  # is auto-probed from LM Studio (/api/v1/models) at startup and learned
+  # from overflow errors at runtime; set context_chars to override manually.
+  # context_chars: 24000   # judge context window in characters
+  oversize_ratio: 0.5
+
+routing:
+  # Difficulty score (1-10) thresholds assigned by the local judge.
+  moderate_min: 4         # score >= 4 goes to the moderate tier
+  hard_min: 7             # score >= 7 goes to the hard tier
+  fallback_difficulty: 5  # used if the local judge is unreachable
+  fallback_to_other_tiers: true  # try neighbouring tiers when a tier is exhausted
+
+# Per-tier request defaults. Explicit client values always win; these fill
+# gaps only (e.g. stop reasoning models burning unbounded thinking budgets).
+# tier_policies:
+#   easy:
+#     max_tokens: 2048
+#     extra_body: {"thinking": {"type": "disabled"}}
+#   moderate:
+#     max_tokens: 8192
+#   hard: {}                # client decides
+
+# Capabilities gate routing: requests containing media parts (image_url,
+# video_url, input_audio, file) or explicitly asking for reasoning
+# (reasoning_effort / reasoning / enable_thinking / thinking) are only sent
+# to providers that declare the matching capability, skipping tiers if
+# needed. Values: text, image, video, audio, file, reasoning. Every
+# provider must list text.
+tiers:
+  easy: [local]
+  moderate: [zai]               # providers tried in order within the tier
+  hard: [openrouter, kilo]
+
+providers:
+  local:
+    base_url: http://127.0.0.1:1234/v1
+    default_model: qwen3.5
+    capabilities: [text]        # text-only local model
+    timeout_seconds: 300        # local generation can be slow
+
+  zai:
+    base_url: https://api.z.ai/api/paas/v4
+    default_model: glm-4.7      # check your Z.ai account for available models
+    capabilities: [text, image, video, reasoning]
+    accounts:
+      - api_key: ${ZAI_KEY_1}
+        note: primary account
+      - api_key: ${ZAI_KEY_2}
+        note: overflow account
+    quota_cooldown_seconds: 600 # parked this long after 429/402
+    auth_failure_cooldown_seconds: 3600
+    # Spending guardrails — reasoning models can burn huge budgets thinking:
+    # max_tokens_cap: 8192                                    # clamp/inject max_tokens
+    # extra_body: {"thinking": {"type": "disabled"}}          # merged into every request
+
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    default_model: deepseek/deepseek-chat-v3.1
+    capabilities: [text]        # this model takes no media
+    accounts:
+      - api_key: ${OPENROUTER_KEY_1}
+    quota_cooldown_seconds: 600
+
+  kilo:
+    # Kilo Gateway — copy the OpenAI-compatible base URL and key from your
+    # dashboard/provider settings.
+    base_url: ${KILO_GATEWAY_URL:-https://kilo.ai/api/gateway/v1}
+    default_model: ${KILO_MODEL:-claude-sonnet-4-5}
+    capabilities: [text, image, reasoning]
+    accounts:
+      - api_key: ${KILO_KEY_1}

@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>inference-proxy admin</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1d212b; --border: #2a2f3a;
+    --text: #d7dae0; --muted: #8b93a1; --accent: #5b9dff; --ok: #3fb96f;
+    --warn: #e0a53f; --bad: #e05d5d; --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 22px;
+           background: var(--panel); border-bottom: 1px solid var(--border);
+           position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .spacer { flex: 1; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); }
+  .dot.ok { background: var(--ok); }
+  main { max-width: 1080px; margin: 0 auto; padding: 20px 22px 80px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border);
+           border-radius: var(--radius); padding: 16px 18px; margin-top: 16px; }
+  #providers-container.collapsed { max-height: 0; overflow: hidden; opacity: 0; display: none; }
+#routing-container.collapsed { max-height: 0; overflow: hidden; opacity: 0; display: none; }
+#pools-container.collapsed { max-height: 0; overflow: hidden; opacity: 0; display: none; }
+  .card h2 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase;
+             letter-spacing: .08em; color: var(--muted); }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 3px; }
+  input[type=text], input[type=password], input[type=number], textarea, select {
+    width: 100%; padding: 7px 10px; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px; font: inherit; }
+  input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
+  .row > * { flex: 1; }
+  .row > .narrow { flex: 0 0 auto; }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 12px;
+           color: var(--text); font-size: 13px; }
+  .check input { width: auto; }
+  button { padding: 7px 14px; border-radius: 7px; border: 1px solid var(--border);
+           background: var(--panel2); color: var(--text); cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent);
+                   color: #fff; font-weight: 600; }
+  button.small { padding: 3px 9px; font-size: 12px; }
+  button.ghost { background: transparent; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px;
+       border-bottom: 1px solid var(--border); }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 99px; font-size: 12px; }
+  .pill.ok { background: rgba(63,185,111,.15); color: var(--ok); }
+  .pill.cooling { background: rgba(224,93,93,.15); color: var(--bad); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .chip { display: flex; align-items: center; gap: 6px; padding: 5px 10px;
+          background: var(--panel2); border: 1px solid var(--border);
+          border-radius: 99px; cursor: pointer; user-select: none; font-size: 13px; }
+  .chip.on { border-color: var(--accent); color: var(--accent); }
+  .chip input { display: none; }
+  .account { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+  .account input { flex: 1; }
+  .provider-head { display: flex; align-items: baseline; gap: 10px; margin-top: 4px; }
+  .provider-head h3 { margin: 0; font-size: 15px; }
+  .provider-head .tierref { color: var(--muted); font-size: 12px; }
+  .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+  #toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+           padding: 10px 18px; border-radius: 8px; background: var(--panel2);
+           border: 1px solid var(--border); display: none; max-width: 80vw; }
+  #toast.err { border-color: var(--bad); color: var(--bad); }
+  #toast.ok { border-color: var(--ok); color: var(--ok); }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .testout { margin-top: 10px; background: var(--panel2); border: 1px solid var(--border);
+             border-radius: 7px; padding: 10px 12px; white-space: pre-wrap;
+             word-break: break-word; display: none; font-size: 13px; }
+  #tiers-container.collapsed { max-height: 0; overflow: hidden; opacity: 0; display: none; }
+  .meta { color: var(--accent); }
+  code { background: var(--panel2); padding: 1px 6px; border-radius: 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>inference-proxy</h1>
+  <span class="dot" id="status-dot" title="server status"></span>
+  <div class="spacer"></div>
+  <input type="password" id="apikey" placeholder="proxy API key (if set)" style="max-width:220px">
+  <button class="primary" id="save">Save settings</button>
+</header>
+
+<main>
+  <div class="grid">
+  <div class="card" style="margin-top:0">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <h2 style="margin:0">Routing</h2>
+      <button class="small ghost" id="collapse-routing">▼</button>
+    </div>
+    <div id="routing-container" style="transition:max-height 200ms ease,opacity 200ms ease;overflow:hidden">
+      <div class="fields">
+        <div><label>Moderate threshold (score ≥)</label><input type="number" id="routing.moderate_min" min="1" max="10"></div>
+        <div><label>Hard threshold (score ≥)</label><input type="number" id="routing.hard_min" min="1" max="10"></div>
+        <div><label>Fallback difficulty (judge unreachable)</label><input type="number" id="routing.fallback_difficulty" min="1" max="10"></div>
+        <div><label>Cooldown seconds shown live below</label><input type="text" disabled placeholder="—"></div>
+      </div>
+      <div class="check"><input type="checkbox" id="routing.fallback_to_other_tiers">
+        <span>Fall back to neighbouring tiers when a tier is exhausted</span></div>
+    </div>
+  </div>
+
+    <div class="card" style="margin-top:0">
+      <h2>Difficulty classifier (local judge)</h2>
+      <label>Base URL</label><input type="text" id="classifier.base_url">
+      <label>Model</label><input type="text" id="classifier.model">
+      <div class="fields">
+        <div><label>API key (blank = keep)</label><input type="password" id="classifier.api_key"></div>
+        <div><label>Timeout seconds</label><input type="number" id="classifier.timeout_seconds" step="0.5"></div>
+        <div><label>Max transcript chars</label><input type="number" id="classifier.max_chars"></div>
+        <div><label>Temperature</label><input type="number" id="classifier.temperature" step="0.1"></div>
+        <div><label>Judge context chars (blank = auto-probe)</label><input type="number" id="classifier.context_chars"></div>
+        <div><label>Oversize skip ratio</label><input type="number" id="classifier.oversize_ratio" step="0.05" min="0.05" max="1"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Access</h2>
+    <div class="check"><input type="checkbox" id="require_key"><span>Require clients to send a proxy API key</span></div>
+    <label>Proxy API key (only used when you type a new one)</label>
+    <input type="password" id="server.api_key" placeholder="leave empty to keep current">
+  </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <h2 style="margin:0">Tier assignments</h2>
+      <button class="small ghost" id="collapse-tiers">▼</button>
+    </div>
+    <div id="tiers-container" style="transition:max-height 200ms ease,opacity 200ms ease">
+      <div id="tiers"></div>
+      <div class="hint" style="opacity:1">Providers are tried in the order shown per tier; on exhaustion the proxy walks down then up the tiers.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <h2 style="margin:0">Providers &amp; accounts</h2>
+      <button class="small ghost" id="collapse-providers">▼</button>
+    </div>
+    <div id="providers-container" style="transition:max-height 200ms ease,opacity 200ms ease;overflow:hidden">
+      <div id="providers"></div>
+      <button class="small ghost" id="add-provider">+ Add provider</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <h2 style="margin:0">Live pool status <span class="hint" style="display:inline">(auto-refresh 5s)</span></h2>
+      <button class="small ghost" id="collapse-pools">▼</button>
+    </div>
+    <div id="pools-container" style="transition:max-height 200ms ease,opacity 200ms ease;overflow:hidden">
+      <div style="overflow-x:auto"><table id="pools">
+      <thead><tr><th>Account</th><th>Note</th><th>Status</th><th>Cooldown</th>
+        <th>Fails</th><th>In flight</th><th>Requests</th><th>Failures</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </div>
+
+  <div class="card" style="height:320px;display:flex;flex-direction:column">
+    <h2>Recent requests</h2>
+    <div style="overflow:auto;flex:1;border-top:1px solid var(--border);border-bottom:1px solid var(--border);min-height:0">
+      <table id="recent">
+      <thead><tr><th>Time</th><th>Model</th><th>Diff</th><th>Tier</th><th>Provider</th><th>Account</th><th>Upstream model</th><th>Status</th><th>ms</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Test request</h2>
+    <div class="row">
+      <select id="test.model" style="flex:0 0 220px">
+        <option>auto</option><option>easy</option><option>moderate</option><option>hard</option>
+      </select>
+      <button id="test.run" class="narrow">Run</button>
+    </div>
+    <label>Prompt</label>
+    <textarea id="test.prompt" rows="3">Write a haiku about routing.</textarea>
+    <div class="testout" id="test.out"></div>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const MASK = "\u2022\u2022\u2022\u2022";
+const CAPABILITIES = ["text", "image", "video", "audio", "file", "reasoning"];
+let VIEW = null;
+let PROVIDERS = [];
+const DELETED = new Set();
+const PANEL_STATES_KEY = "proxy_panel_states";
+
+function getPanelState(id) {
+    try {
+        const states = JSON.parse(localStorage.getItem(PANEL_STATES_KEY) || "{}");
+        return states[id] || false;
+    } catch {
+        return false;
+    }
+}
+
+function savePanelState(id, collapsed) {
+    try {
+        const states = JSON.parse(localStorage.getItem(PANEL_STATES_KEY) || "{}");
+        states[id] = collapsed;
+        localStorage.setItem(PANEL_STATES_KEY, JSON.stringify(states));
+    } catch {
+        // ignore localStorage errors
+    }
+}
+
+function toast(msg, ok) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.className = ok ? "ok" : "err";
+  t.style.display = "block";
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.style.display = "none", 3500);
+}
+
+function authHeaders(extra) {
+  const h = Object.assign({"Content-Type": "application/json"}, extra || {});
+  const k = $("#apikey").value.trim();
+  if (k) h["Authorization"] = "Bearer " + k;
+  return h;
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, Object.assign({}, opts, {headers: authHeaders(opts && opts.headers)}));
+  let body = null;
+  try { body = await res.json(); } catch (e) { /* non-json */ }
+  if (!res.ok) {
+    const msg = body && body.error && (body.error.message || JSON.stringify(body.error)) || res.statusText;
+    throw new Error(res.status + ": " + msg);
+  }
+  return body;
+}
+
+function setInput(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.value = value === null || value === undefined ? "" : value;
+}
+
+function getInput(id) {
+  const el = document.getElementById(id);
+  return el ? el.value.trim() : "";
+}
+
+function render(view) {
+  VIEW = view;
+  DELETED.clear();
+  PROVIDERS = Object.keys(view.providers);
+  for (const [k, v] of Object.entries(view.routing)) setInput("routing." + k, v);
+  for (const [k, v] of Object.entries(view.classifier)) setInput("classifier." + k, v);
+  const hasServerKey = !!view.server.api_key;
+  $("#require_key").checked = hasServerKey;
+  document.getElementById("server.api_key").value = "";
+  document.getElementById("server.api_key").placeholder = hasServerKey ? "leave empty to keep current key" : "not set";
+  renderTiers(view);
+  renderProviders(view);
+
+  // Restore panel collapse states
+  const containers = [
+    { id: "routing-container", btn: "collapse-routing" },
+    { id: "tiers-container", btn: "collapse-tiers" },
+    { id: "providers-container", btn: "collapse-providers" },
+    { id: "pools-container", btn: "collapse-pools" },
+  ];
+  for (const { id, btn } of containers) {
+    const collapsed = getPanelState(id);
+    if (collapsed) {
+      const container = document.getElementById(id);
+      const button = document.getElementById(btn);
+      if (container && button) {
+        container.style.maxHeight = null;
+        container.style.opacity = "";
+        button.textContent = "▼";
+        container.classList.remove("collapsed");
+      }
+    }
+  }
+}
+
+function renderTiers(view) {
+  const host = $("#tiers");
+  host.innerHTML = "";
+  const policies = view.tier_policies || {};
+  for (const tier of ["easy", "moderate", "hard"]) {
+    const chosen = new Set(view.tiers[tier] || []);
+    const label = document.createElement("div");
+    label.className = "label"; label.style.cssText = "font-size:12px;color:var(--muted);margin:10px 0 0";
+    label.textContent = tier.toUpperCase();
+    const chips = document.createElement("div");
+    chips.className = "chips";
+    chips.dataset.tier = tier;
+    for (const name of PROVIDERS) {
+      const chip = document.createElement("label");
+      chip.className = "chip" + (chosen.has(name) ? " on" : "");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = chosen.has(name);
+      input.addEventListener("change", () => chip.classList.toggle("on", input.checked));
+      chip.append(input, document.createTextNode(name));
+      chips.appendChild(chip);
+    }
+    const policy = document.createElement("div");
+    policy.className = "tier-policy";
+    policy.dataset.tier = tier;
+    const pol = policies[tier] || {};
+    const pl1 = document.createElement("label");
+    pl1.textContent = "Default max tokens (blank = client decides)";
+    const mt = document.createElement("input");
+    mt.type = "number";
+    mt.dataset.field = "max_tokens";
+    mt.value = pol.max_tokens === null || pol.max_tokens === undefined ? "" : pol.max_tokens;
+    const pl2 = document.createElement("label");
+    pl2.textContent = "Default extra body (JSON; explicit client values always win)";
+    const eb = document.createElement("textarea");
+    eb.rows = 2;
+    eb.dataset.field = "extra_body";
+    eb.placeholder = "{}";
+    eb.value = Object.keys(pol.extra_body || {}).length ? JSON.stringify(pol.extra_body) : "";
+    policy.append(pl1, mt, pl2, eb);
+    host.append(label, chips, policy);
+  }
+}
+
+function accountRow(providerName, acc, index) {
+  const row = document.createElement("div");
+  row.className = "account";
+  const key = document.createElement("input");
+  key.type = "password";
+  key.dataset.field = "api_key";
+  key.dataset.provider = providerName;
+  key.dataset.index = index;
+  key.placeholder = acc.has_key ? (acc.api_key || "key set") : "(no key)";
+  key.value = "";  // empty means "keep current"; sent value resolved in collect()
+  const note = document.createElement("input");
+  note.type = "text";
+  note.dataset.field = "note";
+  note.placeholder = "note";
+  note.value = acc.note || "";
+  const del = document.createElement("button");
+  del.className = "small ghost";
+  del.textContent = "✕";
+  del.title = "Remove account";
+  del.addEventListener("click", () => row.remove());
+  row.append(key, note, del);
+  return row;
+}
+
+function providerCard(name, p, tierRefs) {
+  const card = document.createElement("div");
+  card.style.cssText = "border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-top:12px;background:var(--panel2)";
+  const head = document.createElement("div");
+  head.className = "provider-head";
+  const h3 = document.createElement("h3");
+  h3.textContent = name;
+  const refs = document.createElement("span");
+  refs.className = "tierref";
+  refs.textContent = tierRefs || "";
+  const del = document.createElement("button");
+  del.className = "small ghost";
+  del.style.marginLeft = "auto";
+  del.textContent = "Delete";
+  del.title = "Remove this provider (applied on Save)";
+  del.addEventListener("click", () => {
+    const assigned = [...document.querySelectorAll("#tiers .chips")]
+      .filter(group => [...group.querySelectorAll("input:checked")]
+        .some(i => i.closest(".chip").textContent.trim() === name))
+      .map(g => g.dataset.tier);
+    if (assigned.length) {
+      toast(`Unassign "${name}" from tiers first: ${assigned.join(", ")}`, false);
+      return;
+    }
+    if (!confirm(`Delete provider "${name}"? Applied when you click Save.`)) return;
+    DELETED.add(name);
+    PROVIDERS = PROVIDERS.filter(n => n !== name);
+    card.remove();
+    renderTiers(VIEW);
+  });
+  head.append(h3, refs, del);
+  card.appendChild(head);
+
+  const mk = (field, label, type, step) => {
+    const wrap = document.createElement("div");
+    const l = document.createElement("label"); l.textContent = label;
+    const input = document.createElement("input");
+    input.type = type || "text";
+    if (step) input.step = step;
+    input.dataset.field = field;
+    input.value = p[field] === null || p[field] === undefined ? "" : p[field];
+    wrap.append(l, input);
+    return wrap;
+  };
+  const grid = document.createElement("div");
+  grid.className = "fields";
+  grid.append(
+    mk("base_url", "Base URL", "text"),
+    mk("default_model", "Default model", "text"),
+    mk("timeout_seconds", "Timeout (s)", "number", "0.5"),
+    mk("quota_cooldown_seconds", "Quota cooldown (s)", "number", "1"),
+    mk("auth_failure_cooldown_seconds", "Auth-failure cooldown (s)", "number", "1"),
+    mk("max_tokens_cap", "Max tokens cap (empty = none)", "number", "1")
+  );
+  card.appendChild(grid);
+
+  const capLabel = document.createElement("div");
+  capLabel.className = "label";
+  capLabel.style.cssText = "font-size:12px;color:var(--muted);margin:10px 0 0";
+  capLabel.textContent = "CAPABILITIES (requests needing a missing one skip this provider)";
+  const capsRow = document.createElement("div");
+  capsRow.className = "chips";
+  const caps = new Set(p.capabilities || ["text"]);
+  for (const cap of CAPABILITIES) {
+    const chip = document.createElement("label");
+    chip.className = "chip" + (caps.has(cap) ? " on" : "");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.dataset.cap = cap;
+    input.checked = caps.has(cap);
+    if (cap === "text") input.disabled = true;  // every provider must handle text
+    input.addEventListener("change", () => chip.classList.toggle("on", input.checked));
+    chip.append(input, document.createTextNode(cap));
+    capsRow.appendChild(chip);
+  }
+  card.append(capLabel, capsRow);
+
+  const ebLabel = document.createElement("label");
+  ebLabel.textContent = "Extra body (JSON merged into every request, e.g. {\"thinking\": {\"type\": \"disabled\"}})";
+  const eb = document.createElement("textarea");
+  eb.rows = 2;
+  eb.dataset.field = "extra_body";
+  eb.value = Object.keys(p.extra_body || {}).length ? JSON.stringify(p.extra_body) : "";
+  eb.placeholder = "{}";
+  card.append(ebLabel, eb);
+
+  const accLabel = document.createElement("label");
+  accLabel.textContent = "Accounts (empty key field = keep existing)";
+  card.appendChild(accLabel);
+  const accHost = document.createElement("div");
+  accHost.dataset.accounts = name;
+  (p.accounts || []).forEach((acc, i) => accHost.appendChild(accountRow(name, acc, i)));
+  card.appendChild(accHost);
+  const add = document.createElement("button");
+  add.className = "small ghost";
+  add.textContent = "+ Add account";
+  add.addEventListener("click", () =>
+    accHost.appendChild(accountRow(name, {api_key: null, note: "", has_key: false}, accHost.children.length)));
+  card.appendChild(add);
+  return card;
+}
+
+function renderProviders(view) {
+  const host = $("#providers");
+  host.innerHTML = "";
+  const refs = {};
+  for (const [tier, names] of Object.entries(view.tiers))
+    names.forEach(n => refs[n] = (refs[n] ? refs[n] + ", " : "") + tier);
+  for (const [name, p] of Object.entries(view.providers))
+    host.appendChild(providerCard(name, p, refs[name] || "unused"));
+}
+
+function collect() {
+  const payload = {routing: {}, tiers: {}, classifier: {}, providers: {}};
+  for (const field of ["moderate_min", "hard_min", "fallback_difficulty"])
+    payload.routing[field] = Number(getInput("routing." + field));
+  payload.routing.fallback_to_other_tiers = document.getElementById("routing.fallback_to_other_tiers").checked;
+
+  for (const field of ["base_url", "model", "api_key", "timeout_seconds", "max_chars", "temperature", "context_chars", "oversize_ratio"]) {
+    const raw = getInput("classifier." + field);
+    if (field === "api_key") payload.classifier[field] = raw || ((VIEW && VIEW.classifier.api_key) || "");
+    else if (field === "context_chars") payload.classifier[field] = raw ? Number(raw) : null;
+    else if (field === "base_url" || field === "model") payload.classifier[field] = raw;
+    else payload.classifier[field] = Number(raw);
+  }
+
+  payload.server = {api_key: null};
+  if ($("#require_key").checked) {
+    const typed = getInput("server.api_key");
+    payload.server.api_key = typed || ((VIEW && VIEW.server.api_key) || "");
+  }
+
+  document.querySelectorAll("#tiers .chips").forEach(chips => {
+    payload.tiers[chips.dataset.tier] =
+      [...chips.querySelectorAll("input:checked")].map(i => i.closest(".chip").textContent.trim());
+  });
+
+  payload.tier_policies = {};
+  document.querySelectorAll("#tiers .tier-policy").forEach(box => {
+    const tier = box.dataset.tier;
+    const mt = box.querySelector("[data-field='max_tokens']").value.trim();
+    const ebRaw = box.querySelector("[data-field='extra_body']").value.trim();
+    let extra = {};
+    if (ebRaw !== "") {
+      try { extra = JSON.parse(ebRaw); } catch (e) {
+        throw new Error(`Tier "${tier}": extra body is not valid JSON`);
+      }
+    }
+    payload.tier_policies[tier] = {
+      max_tokens: mt === "" ? null : Number(mt),
+      extra_body: extra,
+    };
+  });
+
+  const providerPayload = {};
+  const cards = $("#providers").children;
+  for (const card of cards) {
+    const name = card.querySelector("h3").textContent;
+    const get = f => { const el = card.querySelector(`[data-field="${f}"]`); return el ? el.value.trim() : ""; };
+    const num = f => Number(get(f));
+    const accounts = [...card.querySelectorAll(".account")].map(row => {
+      const keyInput = row.querySelector("[data-field='api_key']");
+      const noteInput = row.querySelector("[data-field='note']");
+      const typed = keyInput.value;
+      const kept = typed === "" ? (keyInput.placeholder !== "(no key)" ? keyInput.placeholder : "") : typed;
+      return {api_key: kept, note: noteInput.value};
+    });
+    const capRaw = get("max_tokens_cap");
+    let extraBody = {};
+    const ebRaw = get("extra_body");
+    if (ebRaw !== "") {
+      try { extraBody = JSON.parse(ebRaw); } catch (e) {
+        throw new Error(`Provider "${name}": extra body is not valid JSON`);
+      }
+    }
+    providerPayload[name] = {
+      base_url: get("base_url"),
+      default_model: get("default_model") || null,
+      timeout_seconds: num("timeout_seconds"),
+      quota_cooldown_seconds: num("quota_cooldown_seconds"),
+      auth_failure_cooldown_seconds: num("auth_failure_cooldown_seconds"),
+      max_tokens_cap: capRaw === "" ? null : Number(capRaw),
+      extra_body: extraBody,
+      capabilities: [...card.querySelectorAll("input[data-cap]:checked")].map(i => i.dataset.cap),
+      accounts,
+    };
+  }
+  for (const name of DELETED) {
+    if (!(name in providerPayload)) providerPayload[name] = null;
+  }
+  payload.providers = providerPayload;
+  return payload;
+}
+
+async function save() {
+  try {
+    const view = await api("/admin/api/settings", {method: "PUT", body: JSON.stringify(collect())});
+    render(view);
+    toast("Settings saved and applied", true);
+  } catch (e) { toast("Save failed — " + e.message, false); }
+}
+
+async function refreshPools() {
+  try {
+    const data = await api("/admin/pools");
+    const tbody = $("#pools tbody");
+    tbody.innerHTML = "";
+    for (const pool of data.providers) {
+      for (const a of pool.accounts) {
+        const tr = document.createElement("tr");
+        const cells = [
+          a.id,
+          a.note || "",
+          a.healthy ? "healthy" : "cooling",
+          a.healthy ? "—" : a.cooldown_remaining_seconds + "s",
+          String(a.consecutive_failures),
+          String(a.in_flight),
+          String(a.total_requests),
+          String(a.total_failures),
+        ];
+        cells.forEach((c, i) => {
+          const td = document.createElement("td");
+          if (i === 2) {
+            const pill = document.createElement("span");
+            pill.className = "pill " + (a.healthy ? "ok" : "cooling");
+            pill.textContent = c;
+            td.appendChild(pill);
+          } else td.textContent = c;
+          tr.appendChild(td);
+        });
+        const actions = document.createElement("td");
+        const reset = document.createElement("button");
+        reset.className = "small";
+        reset.textContent = "Reset";
+        reset.addEventListener("click", async () => {
+          try {
+            await api(`/admin/api/pools/${pool.name}/accounts/${a.id.split("#")[1]}/reset`, {method: "POST"});
+            refreshPools();
+          } catch (e) { toast("Reset failed — " + e.message, false); }
+        });
+        actions.appendChild(reset);
+        tr.appendChild(actions);
+        tbody.appendChild(tr);
+      }
+    }
+    $("#status-dot").classList.add("ok");
+  } catch (e) {
+    $("#status-dot").classList.remove("ok");
+  }
+  refreshRecent();
+}
+
+async function refreshRecent() {
+  try {
+    const data = await api("/admin/api/recent");
+    const tbody = document.querySelector("#recent tbody");
+    tbody.innerHTML = "";
+    for (const r of data.requests) {
+      const tr = document.createElement("tr");
+      const cells = [
+        new Date(r.ts * 1000).toLocaleTimeString(),
+        r.model,
+        r.difficulty === null || r.difficulty === undefined ? "—" : String(r.difficulty),
+        r.tier || "—",
+        r.provider || "—",
+        r.account || "—",
+        r.upstream_model || "—",
+        String(r.status),
+        String(r.ms) + (r.stream ? " (stream)" : ""),
+      ];
+      for (const c of cells) {
+        const td = document.createElement("td");
+        td.textContent = c;
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+  } catch (e) { /* pools panel already surfaces auth errors */ }
+}
+
+async function runTest() {
+  const out = document.getElementById("test.out");
+  out.style.display = "block";
+  out.textContent = "Running…";
+  const started = performance.now();
+  try {
+    const body = {
+      model: document.getElementById("test.model").value,
+      messages: [{role: "user", content: document.getElementById("test.prompt").value}],
+    };
+    const res = await fetch("/v1/chat/completions", {
+      method: "POST", headers: authHeaders(), body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    const ms = Math.round(performance.now() - started);
+    if (!res.ok) {
+      out.textContent = `HTTP ${res.status}\n` + JSON.stringify(data, null, 2);
+      return;
+    }
+    const meta = data.inference_proxy || {};
+    const content = data.choices && data.choices[0] && data.choices[0].message
+      ? data.choices[0].message.content : "";
+    out.innerHTML = "";
+    const metaLine = document.createElement("div");
+    metaLine.className = "meta";
+    metaLine.textContent =
+      `tier=${meta.tier} provider=${meta.provider} account=${meta.account} ` +
+      `difficulty=${meta.difficulty} (${meta.difficulty_method}) model=${meta.model} — ${ms}ms`;
+    const text = document.createElement("div");
+    text.textContent = content.slice(0, 500) || "(empty)";
+    out.append(metaLine, text);
+  } catch (e) {
+    out.textContent = "Request failed — " + e.message;
+  }
+}
+
+$("#save").addEventListener("click", save);
+function togglePanel(id, btnId) {
+  const container = document.getElementById(id);
+  const btn = document.getElementById(btnId);
+  if (container.style.maxHeight) {
+    container.style.maxHeight = null;
+    container.style.opacity = "";
+    btn.textContent = "▼";
+    container.classList.remove("collapsed");
+  } else {
+    container.style.maxHeight = container.scrollHeight + "px";
+    btn.textContent = "▶";
+    container.classList.add("collapsed");
+  }
+}
+document.getElementById("collapse-tiers").addEventListener("click", () => togglePanel("tiers-container", "collapse-tiers"));
+document.getElementById("collapse-providers").addEventListener("click", () => togglePanel("providers-container", "collapse-providers"));
+document.getElementById("collapse-routing").addEventListener("click", () => togglePanel("routing-container", "collapse-routing"));
+document.getElementById("collapse-pools").addEventListener("click", () => togglePanel("pools-container", "collapse-pools"));
+document.getElementById("test.run").addEventListener("click", runTest);
+$("#apikey").addEventListener("change", () => localStorage.setItem("proxy_key", $("#apikey").value.trim()));
+$("#apikey").value = localStorage.getItem("proxy_key") || "";
+$("#add-provider").addEventListener("click", () => {
+  const name = prompt("Provider name (free-form; used in tiers and as 'name' / 'name:model' in requests):");
+  if (!name) return;
+  name = name.trim();
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) { toast("Use letters, digits, - or _ only", false); return; }
+  const cardExists = [...$("#providers").children].some(
+    c => c.querySelector("h3").textContent === name);
+  if (cardExists) { toast("Provider already exists", false); return; }
+  DELETED.delete(name);
+  VIEW.providers[name] = {
+    base_url: "", default_model: "", timeout_seconds: 120,
+    quota_cooldown_seconds: 600, auth_failure_cooldown_seconds: 3600,
+    accounts: [{api_key: null, note: "", has_key: false}],
+  };
+  if (!PROVIDERS.includes(name)) PROVIDERS.push(name);
+  renderTiers(VIEW);
+  $("#providers").appendChild(providerCard(name, VIEW.providers[name], "new"));
+});
+
+function collectWithPanelStates() {
+  const payload = collect();
+  const states = {};
+  const containers = [
+    { id: "routing-container", btn: "collapse-routing" },
+    { id: "tiers-container", btn: "collapse-tiers" },
+    { id: "providers-container", btn: "collapse-providers" },
+    { id: "pools-container", btn: "collapse-pools" },
+  ];
+  for (const { id, btn } of containers) {
+    const container = document.getElementById(id);
+    states[id] = container.style.maxHeight !== null;
+  }
+  payload.panel_states = states;
+  return payload;
+}
+
+async function save() {
+  try {
+    const view = await api("/admin/api/settings", {method: "PUT", body: JSON.stringify(collectWithPanelStates())});
+    render(view);
+    toast("Settings saved and applied", true);
+  } catch (e) { toast("Save failed — " + e.message, false); }
+}
+
+refreshPools();
+setInterval(refreshPools, 5000);
+api("/admin/api/settings").then(render).catch(e => toast("Load failed — " + e.message, false));
+</script>
+</body>
+</html>
