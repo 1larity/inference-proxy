@@ -95,15 +95,24 @@ class TierPolicy(BaseModel):
 
 
 class RoutingConfig(BaseModel):
-    moderate_min: int = Field(default=4, ge=1, le=10)
-    hard_min: int = Field(default=7, ge=1, le=10)
+    trivial_max: int = Field(default=2, ge=1, le=10)
+    moderate_min: int = Field(default=3, ge=1, le=10)
+    complex_min: int = Field(default=6, ge=1, le=10)
+    hardcore_min: int = Field(default=9, ge=1, le=10)
     fallback_difficulty: int = Field(default=5, ge=1, le=10)
     fallback_to_other_tiers: bool = True
 
     @model_validator(mode="after")
     def _check_thresholds(self) -> RoutingConfig:
-        if self.hard_min < self.moderate_min:
-            raise ConfigError("routing.hard_min must be >= routing.moderate_min")
+        if not (
+            self.trivial_max < self.moderate_min
+            < self.complex_min
+            < self.hardcore_min
+        ):
+            raise ConfigError(
+                "routing thresholds must satisfy "
+                "trivial_max < moderate_min < complex_min < hardcore_min"
+            )
         return self
 
 
@@ -126,7 +135,7 @@ class ProxyConfig(BaseModel):
     @field_validator("tier_policies")
     @classmethod
     def _check_tier_policies(cls, policies: dict[str, TierPolicy]) -> dict[str, TierPolicy]:
-        extra = set(policies) - {"easy", "moderate", "hard"}
+        extra = set(policies) - {"trivial", "moderate", "complex", "hardcore"}
         if extra:
             raise ConfigError(f"tier_policies has unknown tiers: {sorted(extra)}")
         return policies
@@ -134,12 +143,12 @@ class ProxyConfig(BaseModel):
     @field_validator("tiers")
     @classmethod
     def _check_tiers(cls, tiers: dict[str, list[str]]) -> dict[str, list[str]]:
-        for tier in ("easy", "moderate", "hard"):
+        for tier in ("trivial", "moderate", "complex", "hardcore"):
             if tier not in tiers or not tiers[tier]:
                 raise ConfigError(f"tiers.{tier} must list at least one provider")
-        extra = set(tiers) - {"easy", "moderate", "hard"}
+        extra = set(tiers) - {"trivial", "moderate", "complex", "hardcore"}
         if extra:
-            raise ConfigError(f"unknown tiers: {sorted(extra)}; expected easy/moderate/hard")
+            raise ConfigError(f"unknown tiers: {sorted(extra)}; expected trivial/moderate/complex/hardcore")
         return tiers
 
     @model_validator(mode="after")

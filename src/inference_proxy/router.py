@@ -5,7 +5,7 @@ from __future__ import annotations
 from .config import RoutingConfig
 from .pool import ProviderPool
 
-TIERS = ("easy", "moderate", "hard")
+TIERS = ("trivial", "moderate", "complex", "hardcore")
 
 
 class TierRouter:
@@ -20,11 +20,13 @@ class TierRouter:
         self.routing = routing
 
     def tier_for(self, difficulty: int) -> str:
-        if difficulty >= self.routing.hard_min:
-            return "hard"
+        if difficulty >= self.routing.hardcore_min:
+            return "hardcore"
+        if difficulty >= self.routing.complex_min:
+            return "complex"
         if difficulty >= self.routing.moderate_min:
             return "moderate"
-        return "easy"
+        return "trivial"
 
     def fallback_order(self, tier: str) -> list[str]:
         order = [tier]

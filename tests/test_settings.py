@@ -30,7 +30,7 @@ async def test_get_settings_masks_keys(settings_proxy):
     client, app, upstreams, overlay = settings_proxy
     response = await client.get("/admin/api/settings")
     view = response.json()
-    assert view["routing"]["moderate_min"] == 4
+    assert view["routing"]["moderate_min"] == 3
     assert view["providers"]["zai"]["accounts"][0]["api_key"] == "zai••••ey-1"
     assert "zai-key-1" not in response.text
     assert view["providers"]["local"]["accounts"][0]["has_key"] is False
@@ -40,8 +40,8 @@ async def test_put_settings_persists_and_applies(settings_proxy):
     client, app, upstreams, overlay = settings_proxy
     view = await client.get("/admin/api/settings")
     payload = {
-        "routing": {"moderate_min": 6},
-        "tiers": {"easy": ["local"], "moderate": ["zai"], "hard": ["openrouter", "kilo"]},
+        "routing": {"moderate_min": 6, "complex_min": 7},
+        "tiers": {"trivial": ["local"], "moderate": ["zai"], "complex": ["openrouter"], "hardcore": ["openrouter", "kilo"]},
     }
     response = await client.put("/admin/api/settings", json=payload)
     assert response.status_code == 200
@@ -52,7 +52,7 @@ async def test_put_settings_persists_and_applies(settings_proxy):
     # hot-applies without restart
     upstreams.classifier_score = "5"
     chat = await client.post("/v1/chat/completions", json=chat_body())
-    assert chat.json()["inference_proxy"]["tier"] == "easy"  # 5 < 6
+    assert chat.json()["inference_proxy"]["tier"] == "trivial"  # 5 < 6
 
     # persisted across "restart"
     fresh = create_app(make_config(server=ServerConfig(settings_file=str(overlay))))
@@ -113,30 +113,30 @@ async def test_account_add_remove_live(settings_proxy):
 async def test_tier_reassignment_live(settings_proxy):
     client, app, upstreams, overlay = settings_proxy
     payload = {
-        "tiers": {"easy": ["zai", "local"], "moderate": ["zai"], "hard": ["openrouter", "kilo"]}
+        "tiers": {"trivial": ["zai", "local"], "moderate": ["zai"], "hardcore": ["openrouter", "kilo"]}
     }
     response = await client.put("/admin/api/settings", json=payload)
     assert response.status_code == 200
-    chat = await client.post("/v1/chat/completions", json=chat_body(model="easy"))
+    chat = await client.post("/v1/chat/completions", json=chat_body(model="trivial"))
     assert chat.status_code == 200
     meta = chat.json()["inference_proxy"]
-    assert meta["tier"] == "easy"
+    assert meta["tier"] == "trivial"
     assert meta["provider"] == "zai"
 
 
 async def test_invalid_settings_rejected_without_applying(settings_proxy):
     client, app, upstreams, overlay = settings_proxy
-    payload = {"routing": {"moderate_min": 8, "hard_min": 5}}  # hard < moderate
+    payload = {"routing": {"moderate_min": 8, "hard_min": 5}}  # hardcore < moderate
     response = await client.put("/admin/api/settings", json=payload)
     assert response.status_code == 400
     assert "invalid settings" in response.json()["error"]["message"]
-    assert app.state.config.routing.moderate_min == 4
+    assert app.state.config.routing.moderate_min == 3
     assert not overlay.exists()
 
 
 async def test_unknown_tier_provider_rejected(settings_proxy):
     client, app, upstreams, overlay = settings_proxy
-    payload = {"tiers": {"easy": ["nonexistent"], "moderate": ["zai"], "hard": ["openrouter"]}}
+    payload = {"tiers": {"trivial": ["nonexistent"], "moderate": ["zai"], "hardcore": ["openrouter"]}}
     response = await client.put("/admin/api/settings", json=payload)
     assert response.status_code == 400
 
@@ -182,7 +182,7 @@ async def test_delete_provider_live_and_persisted(settings_proxy):
     assert r.status_code == 400
 
     # retier away from zai, then delete
-    retier = {"tiers": {"easy": ["local"], "moderate": ["local"], "hard": ["openrouter", "kilo"]}}
+    retier = {"tiers": {"trivial": ["local"], "moderate": ["local"], "hardcore": ["openrouter", "kilo"]}}
     assert (await client.put("/admin/api/settings", json=retier)).status_code == 200
     r = await client.put("/admin/api/settings", json={"providers": {"zai": None}})
     assert r.status_code == 200
@@ -203,7 +203,7 @@ async def test_delete_provider_live_and_persisted(settings_proxy):
 
 async def test_readd_deleted_provider(settings_proxy):
     client, app, upstreams, overlay = settings_proxy
-    retier = {"tiers": {"easy": ["local"], "moderate": ["local"], "hard": ["openrouter", "kilo"]}}
+    retier = {"tiers": {"trivial": ["local"], "moderate": ["local"], "hardcore": ["openrouter", "kilo"]}}
     assert (await client.put("/admin/api/settings", json=retier)).status_code == 200
     assert (await client.put("/admin/api/settings", json={"providers": {"zai": None}})).status_code == 200
 
@@ -235,7 +235,7 @@ async def test_readd_deleted_provider(settings_proxy):
 async def test_arbitrary_provider_name(settings_proxy):
     client, app, upstreams, overlay = settings_proxy
     payload = {
-        "tiers": {"easy": ["ghost"], "moderate": ["zai"], "hard": ["openrouter", "kilo"]},
+        "tiers": {"trivial": ["ghost"], "moderate": ["zai"], "hardcore": ["openrouter", "kilo"]},
         "providers": {
             "ghost": {
                 "base_url": "http://local.test/v1",
@@ -246,12 +246,12 @@ async def test_arbitrary_provider_name(settings_proxy):
     }
     assert (await client.put("/admin/api/settings", json=payload)).status_code == 200
 
-    chat = await client.post("/v1/chat/completions", json=chat_body(model="easy"))
+    chat = await client.post("/v1/chat/completions", json=chat_body(model="trivial"))
     assert chat.status_code == 200
     meta = chat.json()["inference_proxy"]
     assert meta["provider"] == "ghost"
     assert meta["account"] == "ghost#0"
-    assert meta["tier"] == "easy"
+    assert meta["tier"] == "trivial"
 
     upstream_request = upstreams.requests[-1]
     assert upstream_request.headers["Authorization"] == "Bearer ghost-key"

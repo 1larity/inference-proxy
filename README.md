@@ -3,9 +3,10 @@
 An OpenAI-compatible proxy that pre-analyses task difficulty on your local LM
 and routes accordingly:
 
-- **easy** → local Qwen 3.5 (llama.cpp / LM Studio)
+- **trivial** → local Qwen 3.5 (llama.cpp / LM Studio)
 - **moderate** → Z.ai, rotating between multiple accounts
-- **hard** → OpenRouter (DeepSeek) / Kilo Gateway
+- **complex** → Z.ai stronger model
+- **hardcore** → OpenRouter (DeepSeek) / Kilo Gateway
 
 Each provider holds a pool of accounts. When an account is rate-limited or out
 of quota (429/402, or quota-sounding error bodies), it is parked with a
@@ -28,7 +29,7 @@ field picks the routing mode:
 | model value        | behaviour                                             |
 |--------------------|-------------------------------------------------------|
 | `auto` (default)   | local judge scores 1–10, tier chosen from thresholds   |
-| `easy`/`moderate`/`hard` | force a tier, no judging                        |
+| `trivial`/`moderate`/`complex`/`hardcore` | force a tier, no judging                        |
 | `zai`              | pin a provider (its default model)                     |
 | `zai:glm-4.7`      | pin a provider and exact model                         |
 
@@ -106,7 +107,7 @@ budgets before writing any visible answer. The proxy has a precedence model:
 
 **explicit client value > tier policy > provider default**
 
-- **Tier policies** (`tier_policies` per easy/moderate/hard, editable in the
+- **Tier policies** (`tier_policies` per trivial/moderate/complex/hardcore, editable in the
   UI under each tier): a `max_tokens` default (injected only when the client
   sends none) and `extra_body` defaults (deep-merged field-by-field only
   where the client stayed silent — so a client asking for a specific
@@ -121,12 +122,12 @@ Example: bound routine work but leave hard tasks to the client:
 
 ```yaml
 tier_policies:
-  easy:
+  trivial:
     max_tokens: 2048
     extra_body: {"thinking": {"type": "disabled"}}
   moderate:
     max_tokens: 8192
-  hard: {}          # client decides
+  hardcore: {}      # client decides
 ```
 
 ## Providers are generic

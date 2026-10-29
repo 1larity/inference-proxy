@@ -19,7 +19,7 @@ from .router import TierRouter
 
 MASK = "\u2022\u2022\u2022\u2022"
 
-ROUTING_FIELDS = ("moderate_min", "hard_min", "fallback_difficulty", "fallback_to_other_tiers")
+ROUTING_FIELDS = ("trivial_max", "moderate_min", "complex_min", "hardcore_min", "fallback_difficulty", "fallback_to_other_tiers")
 CLASSIFIER_FIELDS = (
     "base_url",
     "api_key",
@@ -40,7 +40,7 @@ PROVIDER_FIELDS = (
     "extra_body",
     "capabilities",
 )
-TIER_NAMES = ("easy", "moderate", "hard")
+TIER_NAMES = ("trivial", "moderate", "complex", "hardcore")
 PANEL_IDS = ("routing-container", "tiers-container", "providers-container", "pools-container")
 
 

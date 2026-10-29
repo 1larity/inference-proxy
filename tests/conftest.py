@@ -43,7 +43,7 @@ def make_config(**overrides) -> ProxyConfig:
     defaults = dict(
         server=server,
         classifier=ClassifierConfig(base_url="http://classifier.test/v1", model="rater"),
-        routing=RoutingConfig(moderate_min=4, hard_min=7),
+        routing=RoutingConfig(trivial_max=2, moderate_min=3, complex_min=6, hardcore_min=9),
         providers={
             "local": ProviderConfig(
                 base_url="http://local.test/v1",
@@ -73,9 +73,10 @@ def make_config(**overrides) -> ProxyConfig:
             ),
         },
         tiers={
-            "easy": ["local"],
+            "trivial": ["local"],
             "moderate": ["zai"],
-            "hard": ["openrouter", "kilo"],
+            "complex": ["openrouter"],
+            "hardcore": ["openrouter", "kilo"],
         },
     )
     defaults.update(overrides)

@@ -30,20 +30,24 @@ classifier:
 
 routing:
   # Difficulty score (1-10) thresholds assigned by the local judge.
-  moderate_min: 4         # score >= 4 goes to the moderate tier
-  hard_min: 7             # score >= 7 goes to the hard tier
+  # Four tiers: trivial (score <= 2), moderate (3-5), complex (6-8),
+  # hardcore (9-10) - aligned with the hermes-router v2 policy bands.
+  trivial_max: 2          # score <= 2 goes to the trivial tier
+  moderate_min: 3         # score >= 3 goes to the moderate tier
+  complex_min: 6          # score >= 6 goes to the complex tier
+  hardcore_min: 9         # score >= 9 goes to the hardcore tier
   fallback_difficulty: 5  # used if the local judge is unreachable
   fallback_to_other_tiers: true  # try neighbouring tiers when a tier is exhausted
 
 # Per-tier request defaults. Explicit client values always win; these fill
 # gaps only (e.g. stop reasoning models burning unbounded thinking budgets).
 # tier_policies:
-#   easy:
+#   trivial:
 #     max_tokens: 2048
 #     extra_body: {"thinking": {"type": "disabled"}}
 #   moderate:
 #     max_tokens: 8192
-#   hard: {}                # client decides
+#   hardcore: {}                # client decides
 
 # Capabilities gate routing: requests containing media parts (image_url,
 # video_url, input_audio, file) or explicitly asking for reasoning
@@ -52,9 +56,10 @@ routing:
 # needed. Values: text, image, video, audio, file, reasoning. Every
 # provider must list text.
 tiers:
-  easy: [local]
+  trivial: [local]              # score <= 2: local cheap model
   moderate: [zai]               # providers tried in order within the tier
-  hard: [openrouter, kilo]
+  complex: [zai]
+  hardcore: [openrouter, kilo]
 
 providers:
   local:

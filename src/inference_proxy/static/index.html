@@ -99,8 +99,10 @@
     </div>
     <div id="routing-container" style="transition:max-height 200ms ease,opacity 200ms ease;overflow:hidden">
       <div class="fields">
+        <div><label>Trivial ceiling (score ≤)</label><input type="number" id="routing.trivial_max" min="1" max="10"></div>
         <div><label>Moderate threshold (score ≥)</label><input type="number" id="routing.moderate_min" min="1" max="10"></div>
-        <div><label>Hard threshold (score ≥)</label><input type="number" id="routing.hard_min" min="1" max="10"></div>
+        <div><label>Complex threshold (score ≥)</label><input type="number" id="routing.complex_min" min="1" max="10"></div>
+        <div><label>Hardcore threshold (score ≥)</label><input type="number" id="routing.hardcore_min" min="1" max="10"></div>
         <div><label>Fallback difficulty (judge unreachable)</label><input type="number" id="routing.fallback_difficulty" min="1" max="10"></div>
         <div><label>Cooldown seconds shown live below</label><input type="text" disabled placeholder="—"></div>
       </div>
@@ -180,7 +182,7 @@
     <h2>Test request</h2>
     <div class="row">
       <select id="test.model" style="flex:0 0 220px">
-        <option>auto</option><option>easy</option><option>moderate</option><option>hard</option>
+        <option>auto</option><option>trivial</option><option>moderate</option><option>complex</option><option>hardcore</option>
       </select>
       <button id="test.run" class="narrow">Run</button>
     </div>
@@ -297,7 +299,7 @@ function renderTiers(view) {
   const host = $("#tiers");
   host.innerHTML = "";
   const policies = view.tier_policies || {};
-  for (const tier of ["easy", "moderate", "hard"]) {
+  for (const tier of ["trivial", "moderate", "complex", "hardcore"]) {
     const chosen = new Set(view.tiers[tier] || []);
     const label = document.createElement("div");
     label.className = "label"; label.style.cssText = "font-size:12px;color:var(--muted);margin:10px 0 0";
@@ -475,7 +477,7 @@ function renderProviders(view) {
 
 function collect() {
   const payload = {routing: {}, tiers: {}, classifier: {}, providers: {}};
-  for (const field of ["moderate_min", "hard_min", "fallback_difficulty"])
+  for (const field of ["trivial_max", "moderate_min", "complex_min", "hardcore_min", "fallback_difficulty"])
     payload.routing[field] = Number(getInput("routing." + field));
   payload.routing.fallback_to_other_tiers = document.getElementById("routing.fallback_to_other_tiers").checked;
 
