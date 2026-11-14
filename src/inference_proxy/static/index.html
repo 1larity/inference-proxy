@@ -77,6 +77,7 @@
              border-radius: 7px; padding: 10px 12px; white-space: pre-wrap;
              word-break: break-word; display: none; font-size: 13px; }
   #tiers-container.collapsed { max-height: 0; overflow: hidden; opacity: 0; display: none; }
+  #prices-container.collapsed { max-height: 0; overflow: hidden; opacity: 0; display: none; }
   .meta { color: var(--accent); }
   code { background: var(--panel2); padding: 1px 6px; border-radius: 5px; font-size: 12px; }
 </style>
@@ -152,6 +153,22 @@
     <div id="providers-container" style="transition:max-height 200ms ease,opacity 200ms ease;overflow:hidden">
       <div id="providers"></div>
       <button class="small ghost" id="add-provider">+ Add provider</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <h2 style="margin:0">Models and prices</h2><button class="small ghost" id="collapse-prices">▼</button>
+    </div>
+    <div id="prices-container" style="transition:max-height 200ms ease,opacity 200ms ease;overflow:hidden">
+      <div class="row" style="flex-wrap:wrap"><button class="primary narrow" id="prices.refresh">Refresh prices</button><label class="check narrow" style="margin:0"><input type="checkbox" id="prices.all"><span>Include every model the provider lists</span></label><button class="narrow" id="models.refresh">Refresh model lists</button></div>
+      <div class="hint" id="prices-status">Loading prices…</div><div id="prices.proposals"></div>
+      <h2 style="margin-top:18px">Current prices</h2>
+      <div style="overflow-x:auto"><table id="prices.current"><thead><tr><th>Provider</th><th>Model</th><th>Input / M tokens</th><th>Output / M tokens</th><th>Age</th><th>Source</th></tr></thead><tbody></tbody></table></div>
+      <form id="prices.manual" class="fields" style="margin-top:12px"><div><label>Provider</label><select id="prices.provider"></select></div><div><label>Model</label><input type="text" id="prices.model" required></div><div><label>Input price per million tokens</label><input type="number" id="prices.input" min="0" step="any" required></div><div><label>Output price per million tokens</label><input type="number" id="prices.output" min="0" step="any" required></div><button class="narrow" type="submit">Set price</button></form>
+      <h2 style="margin-top:18px">Models</h2><div id="models.list"></div>
+      <h2 style="margin-top:18px">Spending</h2><div class="row"><label style="margin:0">Days <select id="usage.days"><option>1</option><option selected>7</option><option>30</option></select></label></div>
+      <div style="overflow-x:auto"><table id="usage.table"><thead><tr><th>Provider</th><th>Model</th><th>Tier</th><th>Requests</th><th>Tokens</th><th>Cost</th></tr></thead><tbody></tbody></table></div><div class="hint" id="usage.total"></div>
     </div>
   </div>
 
@@ -278,6 +295,7 @@ function render(view) {
     { id: "routing-container", btn: "collapse-routing" },
     { id: "tiers-container", btn: "collapse-tiers" },
     { id: "providers-container", btn: "collapse-providers" },
+    { id: "prices-container", btn: "collapse-prices" },
     { id: "pools-container", btn: "collapse-pools" },
   ];
   for (const { id, btn } of containers) {
@@ -696,6 +714,7 @@ function togglePanel(id, btnId) {
 }
 document.getElementById("collapse-tiers").addEventListener("click", () => togglePanel("tiers-container", "collapse-tiers"));
 document.getElementById("collapse-providers").addEventListener("click", () => togglePanel("providers-container", "collapse-providers"));
+document.getElementById("collapse-prices").addEventListener("click", () => togglePanel("prices-container", "collapse-prices"));
 document.getElementById("collapse-routing").addEventListener("click", () => togglePanel("routing-container", "collapse-routing"));
 document.getElementById("collapse-pools").addEventListener("click", () => togglePanel("pools-container", "collapse-pools"));
 document.getElementById("test.run").addEventListener("click", runTest);
@@ -727,6 +746,7 @@ function collectWithPanelStates() {
     { id: "routing-container", btn: "collapse-routing" },
     { id: "tiers-container", btn: "collapse-tiers" },
     { id: "providers-container", btn: "collapse-providers" },
+    { id: "prices-container", btn: "collapse-prices" },
     { id: "pools-container", btn: "collapse-pools" },
   ];
   for (const { id, btn } of containers) {
@@ -746,6 +766,39 @@ async function save() {
 }
 
 refreshPools();
+let PRICE_ROWS = [];
+const money = n => "$" + (Number(n || 0)).toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+function cell(tr, value) { const td = document.createElement("td"); td.textContent = value == null ? "-" : String(value); tr.appendChild(td); return td; }
+async function loadPrices() {
+  try {
+    const data = await api("/admin/api/prices"); PRICE_ROWS = data.prices || [];
+    const proposals = PRICE_ROWS.filter(p => p.status === "proposed");
+    $("#prices-status").textContent = proposals.length ? `${proposals.length} changes waiting for your approval` : "No changes waiting for approval";
+    const host = $("#prices.proposals"); host.innerHTML = "";
+    if (proposals.length) {
+      const h = document.createElement("h2"); h.textContent = "Waiting for approval"; host.appendChild(h);
+      const actions = document.createElement("div"); actions.className = "row";
+      for (const [label, path] of [["Apply all", "apply"], ["Reject all", "reject"]]) { const b = document.createElement("button"); b.textContent = label; b.addEventListener("click", () => priceAction(path, {})); actions.appendChild(b); }
+      host.appendChild(actions);
+      const table = document.createElement("table"), body = document.createElement("tbody");
+      const head = document.createElement("thead"), hr = document.createElement("tr");
+      ["Provider", "Model", "Change", "New input / M", "New output / M", ""].forEach(x => { const th=document.createElement("th"); th.textContent=x; hr.appendChild(th); }); head.appendChild(hr); table.append(head,body);
+      for (const p of proposals) { const tr=document.createElement("tr"); cell(tr,p.provider); cell(tr,p.model); cell(tr,p.kind === "new" ? "New" : p.kind === "retired" ? "No longer offered" : `Price changed from ${money(p.old_input)} / ${money(p.old_output)} to ${money(p.input_per_m)} / ${money(p.output_per_m)}`); cell(tr,money(p.input_per_m)); cell(tr,money(p.output_per_m)); const td=cell(tr,""); for (const [label,path] of [["Apply","apply"],["Reject","reject"]]) { const b=document.createElement("button"); b.className="small"; b.textContent=label; b.addEventListener("click",()=>priceAction(path,{ids:[p.id]})); td.appendChild(b); } body.appendChild(tr); }
+      host.appendChild(table);
+    }
+    const body = $("#prices.current tbody"); body.innerHTML = "";
+    for (const p of PRICE_ROWS.filter(x=>x.status === "active")) { const tr=document.createElement("tr"); cell(tr,p.provider); cell(tr,p.model); cell(tr,money(p.input_per_m)); cell(tr,money(p.output_per_m)); cell(tr,(p.age_days ?? "-") + " days" + (p.stale ? " - stale" : "")); const td=cell(tr,p.source || "-"); if (p.source_url) { const a=document.createElement("a"); a.textContent="Source"; a.href=p.source_url; a.target="_blank"; a.rel="noopener noreferrer"; td.append(" ",a); } body.appendChild(tr); }
+    const providers = [...new Set([...PROVIDERS,...PRICE_ROWS.map(p=>p.provider)])]; const sel=$("#prices.provider"), old=sel.value; sel.innerHTML=""; providers.forEach(n=>{const o=document.createElement("option");o.value=n;o.textContent=n;sel.appendChild(o)}); if(providers.includes(old))sel.value=old;
+  } catch(e) { toast("Could not load prices - " + e.message,false); }
+}
+async function priceAction(action, body) { try { await api("/admin/api/prices/"+action,{method:"POST",body:JSON.stringify(body)}); await loadPrices(); toast(action === "apply" ? "Price changes applied" : "Price changes rejected",true); } catch(e) { toast("Price update failed - "+e.message,false); } }
+async function loadModels() { try { const d=await api("/admin/api/models"), host=$("#models.list"); host.innerHTML=""; for(const [name,p] of Object.entries(d.providers||{})){const details=document.createElement("details"),sum=document.createElement("summary");sum.textContent=name;details.appendChild(sum);const div=document.createElement("div");div.className="hint";div.textContent=p.error || (p.models||[]).join(", ") || "No models listed";details.appendChild(div);host.appendChild(details);} if(d.judge){const note=document.createElement("div");note.className="hint";note.textContent=d.judge;host.appendChild(note);} } catch(e){toast("Could not load models - "+e.message,false);} }
+async function loadUsage() { try {const days=$("#usage.days").value,d=await api("/admin/api/usage?days="+days),body=$("#usage.table tbody");body.innerHTML="";for(const r of d.usage||[]){const tr=document.createElement("tr");cell(tr,r.provider);cell(tr,r.model);cell(tr,r.tier);cell(tr,r.requests);cell(tr,Number(r.input_tokens||0)+Number(r.output_tokens||0));cell(tr,r.cost_usd == null ? "not priced" : money(r.cost_usd));body.appendChild(tr);} $("#usage.total").textContent="Total: "+money(d.total_cost_usd)+` over ${days} day(s)`;}catch(e){toast("Could not load spending - "+e.message,false);} }
+$("#prices.refresh").addEventListener("click",async()=>{try{const d=await api("/admin/api/prices/refresh",{method:"POST",body:JSON.stringify($("#prices.all").checked?{all:true}:{})});await loadPrices();toast(`${(d.changes||[]).length} price changes found`,true);}catch(e){toast("Price refresh failed - "+e.message,false);}});
+$("#models.refresh").addEventListener("click",async()=>{try{await api("/admin/api/models/refresh",{method:"POST",body:"{}"});await loadModels();toast("Model lists refreshed",true);}catch(e){toast("Model refresh failed - "+e.message,false);}});
+$("#prices.manual").addEventListener("submit",async e=>{e.preventDefault();try{await api("/admin/api/prices",{method:"PUT",body:JSON.stringify({provider:$("#prices.provider").value,model:$("#prices.model").value.trim(),input_per_m:Number($("#prices.input").value),output_per_m:Number($("#prices.output").value)})});e.target.reset();await loadPrices();toast("Price saved",true);}catch(err){toast("Could not set price - "+err.message,false);}});
+$("#usage.days").addEventListener("change",loadUsage);
+loadPrices(); loadModels(); loadUsage();
 setInterval(refreshPools, 5000);
 api("/admin/api/settings").then(render).catch(e => toast("Load failed - " + e.message, false));
 </script>

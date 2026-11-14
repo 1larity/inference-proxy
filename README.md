@@ -11,6 +11,8 @@ Highlights
 - Fallback: when a tier is used up the proxy tries the tiers either side of it, so a request is only refused when nothing capable is left.
 - Media aware: requests with images, video, audio or files (or asking for reasoning) only go to providers that say they can handle them.
 - Spending guardrails: per-tier token limits and request defaults, so a reasoning model can't quietly burn a month of budget on one prompt.
+- Claude and Codex as providers: the command-line apps can answer requests, so a subscription can sit in a tier next to your API keys.
+- Models, not just providers: a different model per tier, automatic stand-ins when a model is retired, and a price table you refresh and approve.
 - Admin page: edit thresholds, tiers, providers and keys in the browser, watch account health, run a test request. Changes apply without a restart.
 
 Quick Start
@@ -53,6 +55,16 @@ The four tiers, in plain terms
 - Complex (6 to 8): harder debugging, design questions, longer multi-part jobs.
 - Hardcore (9 to 10): the biggest jobs, sent to your strongest provider.
 
+Using Claude or Codex instead of an API key
+- Install the app (`claude` or `codex`) and sign in to it once in a terminal.
+- In `config.yaml` add a provider with `type: claude` (or `codex`), list it in the tiers you want, and set `default_model` (`sonnet`, `opus` and `haiku` for Claude). No key is needed.
+- These answer in one piece (no word-by-word streaming) and can't call tools, so leave them out of tiers that serve coding agents which need tools.
+
+Keeping prices up to date
+- In the admin page open Prices and press Refresh. The proxy asks each provider what it offers and files any new, changed or retired prices as proposals. Nothing changes until you press Apply (or Reject).
+- Prices you type in yourself are kept as they are. Anything older than two weeks is marked stale.
+- Usage shows what your requests really cost, using the price that applied at the time.
+
 If something looks wrong
 - Every answer comes back with headers (`X-Proxy-Tier`, `X-Proxy-Provider`, `X-Proxy-Account`) saying who answered, so you can always see where a request went.
 - If everything lands in the same tier, check the local model is running: when the judge can't be reached the proxy guesses from the length and wording of the prompt instead, which is cruder.
@@ -76,6 +88,18 @@ Capabilities
 - Each provider lists what it accepts: `text` (required), `image`, `video`, `audio`, `file`, `reasoning`.
 - Requests containing `image_url`, `video_url`, `input_audio` or `file` parts, or asking for reasoning (`reasoning_effort`, `reasoning`, `enable_thinking`, `thinking`), are only routed to providers declaring the matching capability. The tier is chosen as usual and incapable providers are skipped, sliding across tiers when needed. If nothing qualifies the proxy returns a 400 rather than forwarding a request that can't work.
 - Pinning a provider bypasses the filter and an upstream rejection is relayed. If a provider rejects media as unsupported anyway (a default model without vision, say), the proxy fails over to the next capable provider unless it was the last one.
+
+Models and fallbacks
+- A provider's `tier_models` choose its model per tier (a cheap one for trivial, a strong one for hardcore), with `default_model` as the fallback. A `model` pinned in the request always wins.
+- If the chosen model comes back as missing or retired (a 404, or a 400 that says so), the proxy tries the provider's `fallback_models`, or failing that the chat models in its `/models` list (loaded ones first, embeddings and audio models skipped, three at most) before moving to the next provider. This never happens for pinned models or for requests with images or audio.
+- `GET /admin/api/models` shows what each provider offers and `POST /admin/api/models/refresh` fetches it again.
+- With no local model, leave the tiers out (a missing tier takes the providers of the nearest tier you did list) and set `classifier.provider: auto`: difficulty is judged by the local server when it answers and otherwise by the first hosted provider, using its trivial-tier model.
+- A provider that goes offline (a local machine whose GPU is busy with something else, say) is parked with a short backoff, retried every minute or so, and the next provider covers meanwhile.
+
+Prices and usage
+- Prices are per million tokens in US dollars. A refresh reads `pricing` from each provider's `/models` (the OpenRouter shape) and writes proposals: new, changed or retired. Applying a proposal replaces the active price, and each request is costed at the price active when it ran.
+- The ledger records the tokens each upstream reports (for streams, when the final chunk carries usage) and the cost. `GET /admin/api/usage?days=7` totals it by provider, model and tier.
+- `server.data_db` is the SQLite file that holds both (in memory if unset).
 
 Spending guardrails
 - The precedence is explicit client value, then tier policy, then provider default.
@@ -106,6 +130,9 @@ Key Endpoints
 - `POST /v1/chat/completions` and `GET /v1/models`: the OpenAI-compatible API.
 - `GET /healthz`: liveness.
 - `/` or `/admin`: the admin page.
+- `GET /admin/api/models`, `POST /admin/api/models/refresh`: the model catalogue.
+- `GET /admin/api/prices`, `PUT /admin/api/prices` (set one by hand), `POST /admin/api/prices/refresh`, `/apply`, `/reject`: the price table.
+- `GET /admin/api/usage?days=7`: cost and tokens by provider, model and tier.
 - `GET /admin/pools`: per-account health, cooldowns and counters.
 - `GET /admin/api/settings`: effective settings with keys masked. `PUT` applies and saves them.
 - `POST /admin/api/pools/{provider}/accounts/{index}/reset`: clear one account's cooldown.

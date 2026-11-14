@@ -41,7 +41,7 @@ PROVIDER_FIELDS = (
     "capabilities",
 )
 TIER_NAMES = ("trivial", "moderate", "complex", "hardcore")
-PANEL_IDS = ("routing-container", "tiers-container", "providers-container", "pools-container")
+PANEL_IDS = ("routing-container", "tiers-container", "providers-container", "prices-container", "pools-container")
 
 
 class SettingsError(Exception):

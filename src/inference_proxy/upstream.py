@@ -7,7 +7,7 @@ import json
 import httpx
 
 from .context import looks_like_context_overflow
-from .pool import AUTH, OVERFLOW, QUOTA, REQUEST, SERVER, UNSUPPORTED
+from .pool import AUTH, MODEL, OVERFLOW, QUOTA, REQUEST, SERVER, UNSUPPORTED
 
 def chat_url(base_url: str) -> str:
     return base_url.rstrip("/") + "/chat/completions"
@@ -99,6 +99,17 @@ def looks_like_media_rejection(detail: str) -> bool:
     )
 
 
+_MODEL_GONE = (
+    "model_not_found", "model not found", "does not exist", "no such model", "unknown model",
+    "invalid model", "model is not available", "model not available", "has been deprecated", "decommissioned",
+)
+
+
+def looks_like_missing_model(detail: str) -> bool:
+    detail = detail.lower()
+    return "model" in detail and any(phrase in detail for phrase in _MODEL_GONE)
+
+
 def classify_upstream_error(status: int, body: bytes) -> str:
     if status in (401, 403):
         return AUTH
@@ -111,6 +122,8 @@ def classify_upstream_error(status: int, body: bytes) -> str:
         return SERVER
     if 400 <= status < 500:
         detail = read_error_detail(status, body).lower()
+        if status in (400, 404) and looks_like_missing_model(detail):
+            return MODEL
         # overflow must win over the quota markers: "context length
         # exceeded" is a request-size problem, not an account-health one
         if looks_like_context_overflow(detail):

@@ -27,10 +27,14 @@ from pydantic import ValidationError
 from starlette.background import BackgroundTask
 
 from .classifier import classify_difficulty
+from .cli import CLI_TYPES, run_cli
 from .config import ConfigError, ProxyConfig, load_config, load_config_dict
 from .context import ContextRegistry, probe_model_context
 from .media import media_capabilities, required_capabilities
+from .models import ModelCatalog
+from .pricing import PriceStore, extract_price
 from .pool import (
+    MODEL,
     NETWORK,
     OVERFLOW,
     REQUEST,
@@ -101,21 +105,67 @@ def create_app(
     }
     router = TierRouter(pools, config.tiers, config.routing)
     context_registry = ContextRegistry()
+    catalog = ModelCatalog()
+    prices = PriceStore(config.server.data_db)
+    judge_state: dict = {"resolved": None, "note": None}
     recent: deque = deque(maxlen=RECENT_LIMIT)
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+    def hosted_judge(name: str):
+        """The judge settings for a provider: its first account, its cheapest-tier model."""
+        pool = pools.get(name)
+        if pool is None or pool.config.type != "openai" or not pool.accounts:
+            return None
+        model = pool.config.tier_models.get("trivial") or pool.config.default_model
+        if not model:
+            return None
+        account = pool.accounts[0]
+        return config.classifier.model_copy(
+            update={"base_url": account.base_url, "api_key": account.api_key, "model": model,
+                    "timeout_seconds": max(config.classifier.timeout_seconds, 30.0)}
+        )
+
+    def current_judge():
+        """The classifier settings in force: the local server, or a hosted provider chosen by classifier.provider."""
+        return judge_state["resolved"] or config.classifier
+
+    async def resolve_judge() -> None:
+        wanted = config.classifier.provider
+        judge_state["resolved"], judge_state["note"] = None, None
+        if not wanted:
+            return
+        if wanted != "auto":
+            judge_state["resolved"] = hosted_judge(wanted)
+            judge_state["note"] = f"judge: provider {wanted}" if judge_state["resolved"] else f"judge: provider {wanted} cannot judge (needs an openai-type provider with a model)"
+            return
+        try:  # any HTTP answer, even an error status, means the local server is there
+            await app.state.http.get(config.classifier.base_url.rstrip("/") + "/models", timeout=3.0)
+            judge_state["note"] = "judge: local server"
+            return
+        except httpx.HTTPError:
+            pass
+        for name in pools:
+            candidate = hosted_judge(name)
+            if candidate is not None:
+                judge_state["resolved"], judge_state["note"] = candidate, f"judge: local server not reachable, using {name}"
+                logger.warning(judge_state["note"])
+                return
+        judge_state["note"] = "judge: nothing reachable, using the length heuristic"
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.http = http_client or httpx.AsyncClient()
         app.state.owns_http = http_client is None
+        await resolve_judge()
+        judge = current_judge()
         # best-effort: learn the judge's context window so oversized prompts
         # can skip the judge instead of triggering overflow loops
         await probe_model_context(
             app.state.http,
-            config.classifier.base_url,
-            config.classifier.model,
-            config.classifier.api_key,
+            judge.base_url,
+            judge.model,
+            judge.api_key,
             context_registry,
         )
         if config.server.state_file:
@@ -135,6 +185,9 @@ def create_app(
     app.state.config = config
     app.state.pools = pools
     app.state.router = router
+    app.state.catalog = catalog
+    app.state.prices = prices
+    app.state.judge_state = judge_state
     app.state.context_registry = context_registry
     app.state.raw_config = merged
     app.state.settings_file = settings_file
@@ -182,7 +235,7 @@ def create_app(
                 )
             difficulty, method = await classify_difficulty(
                 app.state.http,
-                config.classifier,
+                current_judge(),
                 messages,
                 context_registry=context_registry,
                 difficulty_floor=config.routing.moderate_min,
@@ -236,6 +289,8 @@ def create_app(
             write=30.0,
             pool=30.0,
         )
+        if pool.config.type in CLI_TYPES:
+            return await run_cli(pool.config.type, payload.get("model"), payload, pool.config.timeout_seconds, stream)
         request = app.state.http.build_request(
             "POST",
             chat_url(account.base_url),
@@ -295,6 +350,9 @@ def create_app(
 
         for effective_tier, pool in plan:
             tried_accounts: set[str] = set()
+            first_model = model_override or pool.config.tier_models.get(effective_tier) or pool.config.default_model
+            candidates: list[str | None] = [first_model]
+            model_index = 0
             while True:
                 account = pool.acquire()
                 if account is None:
@@ -312,8 +370,8 @@ def create_app(
                     break
                 tried_accounts.add(account.id)
 
-                upstream_model = model_override or pool.config.default_model
-                if not upstream_model:
+                upstream_model = candidates[model_index]
+                if not upstream_model and pool.config.type not in CLI_TYPES:
                     pool.release(account)
                     return JSONResponse(
                         status_code=500,
@@ -363,6 +421,30 @@ def create_app(
                 error_body = await response.aread()
                 await response.aclose()
                 kind = classify_upstream_error(response.status_code, error_body)
+                if kind == MODEL and model_override is None and not caps_beyond_text:
+                    # The model is missing or retired, not the account. Try the provider's other
+                    # models (never when pinned, and never for media, whose support is per model).
+                    pool.release(account)
+                    attempts.append(
+                        {
+                            "provider": pool.name,
+                            "tier": effective_tier,
+                            "account": account.id,
+                            "model": upstream_model,
+                            "status": response.status_code,
+                            "kind": kind,
+                            "error": read_error_detail(response.status_code, error_body),
+                        }
+                    )
+                    if len(candidates) == 1:
+                        if not pool.config.fallback_models:  # configured stand-ins need no discovery
+                            await catalog.ensure(app.state.http, pool)
+                        candidates.extend(catalog.siblings(pool, {m for m in candidates if m}))
+                    model_index += 1
+                    if model_index < len(candidates):
+                        tried_accounts.discard(account.id)
+                        continue
+                    break
                 if kind == OVERFLOW:
                     # The request can never fit this provider's context; the
                     # account is healthy, so fail over without a cooldown and
@@ -382,7 +464,7 @@ def create_app(
                         }
                     )
                     continue
-                relay = kind == REQUEST or (
+                relay = kind == REQUEST or kind == MODEL or (
                     kind == UNSUPPORTED and (effective_tier, pool) == plan[-1]
                 )
                 if relay:
@@ -453,14 +535,28 @@ def create_app(
             # SSE comment: ignored by spec-compliant clients, visible when
             # debugging, and carries the routing decision for streams.
             yield f": {json.dumps({'inference_proxy': meta})}\n\n".encode()
+            seen_usage: dict | None = None
+            pending = b""
             try:
                 async for chunk in response.aiter_raw():
                     yield chunk
+                    if b'"usage"' in chunk or pending:  # cheap check: most chunks carry no usage
+                        pending = (pending + chunk)[-8192:]
+                        for line in pending.split(b"\n"):
+                            if line.startswith(b"data:") and b'"usage"' in line:
+                                try:
+                                    found = json.loads(line[5:]).get("usage")
+                                except (ValueError, AttributeError):
+                                    continue
+                                if isinstance(found, dict):
+                                    seen_usage = found
+                        pending = pending.rsplit(b"\n", 1)[-1] if b"\n" in pending else pending
             except httpx.HTTPError:
                 payload = json.dumps({"error": {"message": "upstream connection lost mid-stream"}})
                 yield f"\n\ndata: {payload}\n\n".encode()
             finally:
                 await response.aclose()
+                prices.record_usage(meta["provider"], meta["model"], meta["tier"], seen_usage)
 
         return StreamingResponse(
             relay(),
@@ -472,6 +568,7 @@ def create_app(
 
     async def json_response(response: httpx.Response, meta: dict) -> JSONResponse:
         try:
+            await response.aread()
             data = response.json()
         except ValueError:
             await response.aclose()
@@ -482,6 +579,7 @@ def create_app(
         await response.aclose()
         if isinstance(data, dict):
             data["inference_proxy"] = meta
+            prices.record_usage(meta["provider"], meta["model"], meta["tier"], data.get("usage"))
         return JSONResponse(status_code=200, content=data, headers=meta_headers(meta))
 
     def relay_upstream_error(status: int, error_body: bytes, provider: str) -> JSONResponse:
@@ -575,6 +673,103 @@ def create_app(
     async def ui_page(request: Request):
         return FileResponse(Path(__file__).parent / "static" / "index.html")
 
+    async def models_catalog(request: Request):
+        unauthorized = check_auth(request)
+        if unauthorized:
+            return unauthorized
+        return JSONResponse(content={"providers": catalog.snapshot(), "judge": judge_state["note"]})
+
+    async def models_refresh(request: Request):
+        unauthorized = check_auth(request)
+        if unauthorized:
+            return unauthorized
+        for pool in pools.values():
+            await catalog.refresh(app.state.http, pool)
+        return JSONResponse(content={"providers": catalog.snapshot(), "judge": judge_state["note"]})
+
+    def price_view() -> dict:
+        now = time.time()
+        rows = prices.listing()
+        for row in rows:
+            row["age_days"] = round((now - row["fetched_at"]) / 86400, 1) if row.get("fetched_at") else None
+            row["stale"] = bool(row["age_days"] is not None and row["age_days"] > config.server.price_stale_days)
+        return {"prices": rows, "stale_after_days": config.server.price_stale_days}
+
+    async def refresh_prices(everything: bool = False) -> list[dict]:
+        """Ask each provider for its models and prices, and file the differences as proposals."""
+        changes: list[dict] = []
+        for name, pool in pools.items():
+            if pool.config.type != "openai":
+                continue
+            entry = await catalog.refresh(app.state.http, pool)
+            if entry["error"] or not entry["raw"]:
+                continue
+            wanted = set(entry["raw"]) if everything else {
+                m for m in (pool.config.default_model, *pool.config.tier_models.values(), *pool.config.fallback_models) if m
+            } | {r["model"] for r in prices.listing("active") if r["provider"] == name}
+            for model in sorted(wanted):
+                if model in entry["raw"]:
+                    price = extract_price(entry["raw"][model])
+                    if price is None:
+                        continue
+                else:
+                    price = None  # reported earlier, gone now
+                kind = prices.propose(name, model, price, "provider /models", pool.accounts[0].base_url.rstrip("/") + "/models" if pool.accounts else None)
+                if kind:
+                    changes.append({"provider": name, "model": model, "kind": kind})
+        return changes
+
+    async def prices_get(request: Request):
+        unauthorized = check_auth(request)
+        return unauthorized or JSONResponse(content=price_view())
+
+    async def prices_refresh(request: Request):
+        unauthorized = check_auth(request)
+        if unauthorized:
+            return unauthorized
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        changes = await refresh_prices(bool((body or {}).get("all")))
+        return JSONResponse(content={"changes": changes, **price_view()})
+
+    async def prices_apply(request: Request):
+        unauthorized = check_auth(request)
+        if unauthorized:
+            return unauthorized
+        body = await request.json()
+        return JSONResponse(content={"applied": prices.apply(body.get("ids") or None), **price_view()})
+
+    async def prices_reject(request: Request):
+        unauthorized = check_auth(request)
+        if unauthorized:
+            return unauthorized
+        body = await request.json()
+        return JSONResponse(content={"rejected": prices.reject(body.get("ids") or None), **price_view()})
+
+    async def prices_set(request: Request):
+        unauthorized = check_auth(request)
+        if unauthorized:
+            return unauthorized
+        body = await request.json()
+        try:
+            prices.set_manual(str(body["provider"]), str(body["model"]), float(body["input_per_m"]), float(body["output_per_m"]), body.get("context"))
+        except (KeyError, TypeError, ValueError) as exc:
+            return JSONResponse(status_code=400, content={"error": {"message": f"bad price: {exc}"}})
+        return JSONResponse(content=price_view())
+
+    async def usage_get(request: Request):
+        unauthorized = check_auth(request)
+        if unauthorized:
+            return unauthorized
+        try:
+            days = float(request.query_params.get("days", 7))
+        except ValueError:
+            days = 7.0
+        rows = prices.usage_summary(days)
+        return JSONResponse(content={"days": days, "usage": rows, "total_cost_usd": round(sum(r["cost_usd"] or 0 for r in rows), 6)})
+
     async def healthz(request: Request):
         return JSONResponse(content={"ok": True})
 
@@ -587,6 +782,14 @@ def create_app(
     app.add_api_route("/admin/api/recent", recent_requests, methods=["GET"])
     app.add_api_route("/", ui_page, methods=["GET"])
     app.add_api_route("/admin", ui_page, methods=["GET"])
+    app.add_api_route("/admin/api/models", models_catalog, methods=["GET"])
+    app.add_api_route("/admin/api/models/refresh", models_refresh, methods=["POST"])
+    app.add_api_route("/admin/api/prices", prices_get, methods=["GET"])
+    app.add_api_route("/admin/api/prices", prices_set, methods=["PUT"])
+    app.add_api_route("/admin/api/prices/refresh", prices_refresh, methods=["POST"])
+    app.add_api_route("/admin/api/prices/apply", prices_apply, methods=["POST"])
+    app.add_api_route("/admin/api/prices/reject", prices_reject, methods=["POST"])
+    app.add_api_route("/admin/api/usage", usage_get, methods=["GET"])
     app.add_api_route("/healthz", healthz, methods=["GET"])
     return app
 

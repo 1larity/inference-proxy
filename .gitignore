@@ -7,3 +7,6 @@ ui-settings.json
 .pytest_cache/
 .kilo/
 .vscode/
+*.db
+*.db-wal
+*.db-shm

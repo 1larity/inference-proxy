@@ -16,6 +16,7 @@ NETWORK = "network"
 REQUEST = "request"
 UNSUPPORTED = "unsupported"
 OVERFLOW = "overflow"
+MODEL = "model"  # the chosen model is missing or retired; the account is fine
 
 
 @dataclass

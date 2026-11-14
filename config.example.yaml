@@ -12,8 +12,15 @@ server:
   # Admin UI edits persist here as an overlay merged over this file.
   # Set to null to disable the UI's persisted settings.
   settings_file: ui-settings.json
+  # Price table and usage ledger (SQLite). Leave out to keep them in memory only.
+  data_db: inference-proxy.db
+  price_stale_days: 14
 
 classifier:
+  # Who judges difficulty. Leave out to use the local server below.
+  #   provider: zai      judge with that provider (its trivial-tier model, or its default model)
+  #   provider: auto     use the local server when it answers, otherwise the first hosted provider
+  # provider: auto
   # Local LM Studio / llama.cpp server used to judge task difficulty.
   base_url: http://127.0.0.1:1234/v1
   model: qwen3.5          # the model id as served locally
@@ -72,6 +79,10 @@ providers:
     base_url: https://api.z.ai/api/paas/v4
     default_model: glm-4.7      # check your Z.ai account for available models
     capabilities: [text, image, video, reasoning]
+    # A different model per tier (cheap for trivial, strong for hardcore). Falls back to default_model.
+    # tier_models: {trivial: glm-4.7, hardcore: glm-5}
+    # Tried in order if the chosen model is missing or retired. Left out, the provider's /models list is used.
+    # fallback_models: [glm-4.6]
     accounts:
       - api_key: ${ZAI_KEY_1}
         note: primary account
@@ -99,3 +110,16 @@ providers:
     capabilities: [text, image, reasoning]
     accounts:
       - api_key: ${KILO_KEY_1}
+
+  # Claude and Codex command-line apps can be providers. They use the app's own login (no key),
+  # take text and inline images, and answer in one piece (no tools, no token streaming).
+  # claude_cli:
+  #   type: claude
+  #   models: [sonnet, opus, haiku]
+  #   default_model: sonnet
+  #   capabilities: [text, image, reasoning]
+  #   timeout_seconds: 300
+  # codex_cli:
+  #   type: codex
+  #   default_model: gpt-5
+  #   capabilities: [text, image, reasoning]

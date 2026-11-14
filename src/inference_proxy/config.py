@@ -45,18 +45,45 @@ class AccountConfig(BaseModel):
     note: str | None = None
 
 
+TIER_NAMES = ("trivial", "moderate", "complex", "hardcore")
+
+
 class ProviderConfig(BaseModel):
-    base_url: str = Field(min_length=1)
+    base_url: str = ""
     api_key: str | None = None
     accounts: list[AccountConfig] = Field(default_factory=list)
     default_model: str | None = None
-    type: Literal["openai"] = "openai"
+    # openai: any OpenAI-compatible HTTP endpoint. claude / codex: run that
+    # command-line app as the provider (one login, no key rotation, no tools).
+    type: Literal["openai", "claude", "codex"] = "openai"
+    # Model per tier for this provider (a cheap model for trivial, a strong one
+    # for hardcore). Falls back to default_model.
+    tier_models: dict[str, str] = Field(default_factory=dict)
+    # Tried, in order, when the chosen model is missing or retired. When empty,
+    # models found through the provider's /models list are used.
+    fallback_models: list[str] = Field(default_factory=list)
+    # Models offered by a provider that has no /models endpoint (the CLIs).
+    models: list[str] = Field(default_factory=list)
     timeout_seconds: float = 120.0
     quota_cooldown_seconds: float = 600.0
     auth_failure_cooldown_seconds: float = 3600.0
     extra_body: dict[str, Any] = Field(default_factory=dict)
     max_tokens_cap: int | None = Field(default=None, ge=1)
     capabilities: list[str] = Field(default_factory=lambda: ["text"])
+
+    @field_validator("tier_models")
+    @classmethod
+    def _check_tier_models(cls, tier_models: dict[str, str]) -> dict[str, str]:
+        extra = set(tier_models) - set(TIER_NAMES)
+        if extra:
+            raise ConfigError(f"tier_models has unknown tiers: {sorted(extra)}")
+        return tier_models
+
+    @model_validator(mode="after")
+    def _check_endpoint(self) -> ProviderConfig:
+        if self.type == "openai" and not self.base_url:
+            raise ConfigError("base_url is required for an openai-type provider")
+        return self
 
     @field_validator("capabilities")
     @classmethod
@@ -72,6 +99,10 @@ class ProviderConfig(BaseModel):
 
 
 class ClassifierConfig(BaseModel):
+    # Which model judges difficulty. Unset: the local server below. A provider
+    # name: that provider's model. "auto": the local server when it answers,
+    # otherwise the first openai-type provider.
+    provider: str | None = None
     base_url: str = Field(default="http://127.0.0.1:1234/v1", min_length=1)
     api_key: str | None = None
     model: str = "local"
@@ -122,15 +153,49 @@ class ServerConfig(BaseModel):
     api_key: str | None = None
     state_file: str | None = None
     settings_file: str | None = "ui-settings.json"
+    # SQLite file for the price table and the usage ledger. Unset: kept in memory only.
+    data_db: str | None = None
+    # A price older than this many days is shown as stale.
+    price_stale_days: int = Field(default=14, ge=1)
+
+
+def fill_missing_tiers(tiers: dict[str, list[str]], providers: list[str]) -> dict[str, list[str]]:
+    """Tiers left out of the config take the providers of the nearest tier that lists some.
+
+    A tier that is present but empty stays empty (that is an error, not a gap).
+    With no tiers listed at all, every tier uses every provider in declared order.
+    """
+    if not tiers:
+        return {t: list(providers) for t in TIER_NAMES}
+    out = {t: list(names) for t, names in tiers.items()}
+    for i, tier in enumerate(TIER_NAMES):
+        if tier in tiers:
+            continue
+        for dist in range(1, len(TIER_NAMES)):
+            near = [TIER_NAMES[j] for j in (i + dist, i - dist) if 0 <= j < len(TIER_NAMES) and tiers.get(TIER_NAMES[j])]
+            if near:
+                out[tier] = list(tiers[near[0]])
+                break
+    return out
 
 
 class ProxyConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
-    tiers: dict[str, list[str]]
+    tiers: dict[str, list[str]] = Field(default_factory=dict)
     providers: dict[str, ProviderConfig]
     tier_policies: dict[str, TierPolicy] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_tiers(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("providers"):
+            tiers = data.get("tiers") or {}
+            if isinstance(tiers, dict) and set(tiers) <= set(TIER_NAMES) and not all(t in tiers for t in TIER_NAMES):
+                data = dict(data)
+                data["tiers"] = fill_missing_tiers(tiers, list(data["providers"]))
+        return data
 
     @field_validator("tier_policies")
     @classmethod
@@ -143,7 +208,7 @@ class ProxyConfig(BaseModel):
     @field_validator("tiers")
     @classmethod
     def _check_tiers(cls, tiers: dict[str, list[str]]) -> dict[str, list[str]]:
-        for tier in ("trivial", "moderate", "complex", "hardcore"):
+        for tier in TIER_NAMES:
             if tier not in tiers or not tiers[tier]:
                 raise ConfigError(f"tiers.{tier} must list at least one provider")
         extra = set(tiers) - {"trivial", "moderate", "complex", "hardcore"}
