@@ -1,124 +1,86 @@
-# inference-proxy
+inference-proxy
 
-An OpenAI-compatible proxy that pre-analyses task difficulty on your local LM
-and routes accordingly:
+![Inference Proxy](docs/header.png)
 
-- **trivial** → local Qwen 3.5 (llama.cpp / LM Studio)
-- **moderate** → Z.ai, rotating between multiple accounts
-- **complex** → Z.ai stronger model
-- **hardcore** → OpenRouter (DeepSeek) / Kilo Gateway
+inference-proxy sits between your AI tools and your AI accounts: it asks a small local model how hard each request is, then sends the easy ones to the local model (free) and the harder ones to hosted providers, rotating between several accounts when one runs out of quota. Any tool that can talk to an OpenAI-compatible endpoint (editors, agents, chat front ends) just points at one address and carries on as normal.
 
-Each provider holds a pool of accounts. When an account is rate-limited or out
-of quota (429/402, or quota-sounding error bodies), it is parked with a
-cooldown and the next account — or the next provider, or a neighbouring tier —
-takes over.
+Highlights
+- One address for everything: `http://127.0.0.1:8480/v1`, OpenAI-compatible, streaming passed straight through.
+- Four tiers: trivial, moderate, complex and hardcore, each with its own list of providers (local first for trivial, bigger hosted models as the score goes up).
+- Account pools: any number of API keys per provider, least-busy first, with a cooldown when a key hits its quota or fails to authenticate.
+- Fallback: when a tier is used up the proxy tries the tiers either side of it, so a request is only refused when nothing capable is left.
+- Media aware: requests with images, video, audio or files (or asking for reasoning) only go to providers that say they can handle them.
+- Spending guardrails: per-tier token limits and request defaults, so a reasoning model can't quietly burn a month of budget on one prompt.
+- Admin page: edit thresholds, tiers, providers and keys in the browser, watch account health, run a test request. Changes apply without a restart.
 
-## Quick start
+Quick Start
+1) Install Python 3.12 or newer and [uv](https://docs.astral.sh/uv/).
+2) Get the code: `git clone https://github.com/1larity/inference-proxy.git` then `cd inference-proxy`.
+3) Install: `uv sync`.
+4) Copy the example settings: `cp config.example.yaml config.yaml`.
+5) Fill in keys, either directly in `config.yaml` or by exporting the environment variables it names (`ZAI_KEY_1`, `OPENROUTER_KEY_1` and so on). Anything written as `${NAME}` is read from the environment.
+6) Make sure your local model is running (LM Studio or llama.cpp) and that `classifier.base_url` and `classifier.model` match it.
+7) Start it: `uv run inference-proxy`.
+8) Point your tool at `http://127.0.0.1:8480/v1` and set the model to `auto`.
 
-```bash
-uv sync
-cp config.example.yaml config.yaml   # fill in keys, or export the env vars
-uv run inference-proxy               # reads ./config.yaml, or set INFERENCE_PROXY_CONFIG
-```
+Check it is up at `http://127.0.0.1:8480/healthz`, and open `http://127.0.0.1:8480/admin` to see it working.
 
-## Client usage
+User Guide (no coding needed once it is running)
 
-Point any OpenAI-compatible client at `http://127.0.0.1:8480/v1`. The `model`
-field picks the routing mode:
+What it does for you: you stop choosing models. Short chatty questions get answered by the model on your own computer, which costs nothing, and the heavy jobs go to the stronger (paid) accounts. If one of your accounts runs out for the day, the next one takes over and you don't see an error.
 
-| model value        | behaviour                                             |
-|--------------------|-------------------------------------------------------|
-| `auto` (default)   | local judge scores 1–10, tier chosen from thresholds   |
-| `trivial`/`moderate`/`complex`/`hardcore` | force a tier, no judging                        |
-| `zai`              | pin a provider (its default model)                     |
-| `zai:glm-4.7`      | pin a provider and exact model                         |
+Setting up your accounts
+- Open `http://127.0.0.1:8480/admin` in your browser.
+- Under Providers & accounts, press + Add provider for each service you use (a name, the web address it gave you, and a model name).
+- Press + Add account inside a provider and paste your key in (a note like "main account" helps later). Saved keys show as `xxx••••abcd`, and leaving a key box alone keeps the one you saved.
+- Under Tier assignments, choose which providers handle each tier. Order matters: the first one is tried first.
+- Press Save settings. It takes effect straight away.
 
-Responses carry routing metadata:
+Using it from your tools
+- Set the tool's API address (sometimes called base URL) to `http://127.0.0.1:8480/v1`.
+- Type anything into the API key box if the tool insists on one (unless you set a proxy key under Access, then use that).
+- Set the model to `auto` and let it choose. To force a level use `trivial`, `moderate`, `complex` or `hardcore`. To use one provider every time, type its name, for example `zai`, or a provider and model together, for example `zai:glm-4.7`.
 
-- headers: `X-Proxy-Tier`, `X-Proxy-Provider`, `X-Proxy-Account`,
-  `X-Proxy-Difficulty`, `X-Proxy-Difficulty-Method`
-- non-streaming bodies also include an `inference_proxy` object with the same.
+Reading the admin page
+- Recent requests shows each request with its difficulty score, the tier it landed in, the provider and account used and the model that answered.
+- Each account shows as healthy or cooling down (with the seconds left). A cooling account has hit its quota or failed to sign in, and comes back by itself. Press Reset if you have topped it up and don't want to wait.
+- Test request lets you type a prompt and see where it would go before you rely on it.
+- Routing holds the score thresholds (see the tiers below). Most people never need to touch them.
 
-Streaming (SSE) is passed through untouched.
+The four tiers, in plain terms
+- Trivial (score 1 to 2): greetings, quick facts, simple rewrites. Handled by your local model.
+- Moderate (3 to 5): everyday coding, writing and analysis.
+- Complex (6 to 8): harder debugging, design questions, longer multi-part jobs.
+- Hardcore (9 to 10): the biggest jobs, sent to your strongest provider.
 
-## Routing details
+If something looks wrong
+- Every answer comes back with headers (`X-Proxy-Tier`, `X-Proxy-Provider`, `X-Proxy-Account`) saying who answered, so you can always see where a request went.
+- If everything lands in the same tier, check the local model is running: when the judge can't be reached the proxy guesses from the length and wording of the prompt instead, which is cruder.
+- A 400 saying no provider can take the request means it contained an image, audio or similar and none of your providers for that tier list that ability. Add the capability to a provider that supports it.
 
-- Difficulty judging asks the local model for a single 1–10 score; if the
-  judge is down or unparseable, a heuristic score is used instead.
-- Account selection prefers the least-busy, least-recently-used healthy
-  account.
-- Failure handling: quota/auth errors park an account for
-  `quota_cooldown_seconds` / `auth_failure_cooldown_seconds`; server and
-  network errors back off exponentially (5 s → 60 s cap). Client errors (other
-  4xx) are relayed verbatim without retrying.
-- When a tier's accounts are all cooling down, the proxy walks to lower tiers
-  first, then higher ones (`routing.fallback_to_other_tiers`).
-- **Capabilities gate media and reasoning.** Each provider declares what it
-  accepts: `capabilities: [text, image, video, audio, file, reasoning]`.
-  Requests containing media parts (`image_url`, `video_url`, `input_audio`,
-  `file`) or explicitly requesting reasoning (`reasoning_effort`, `reasoning`,
-  `enable_thinking`, `thinking`) are only routed to providers that declare the
-  matching capability — the difficulty tier is chosen as usual, then
-  incapable providers are skipped, sliding across tiers if needed. If no
-  configured provider qualifies, the proxy answers 400 instead of forwarding
-  a doomed request. Pinning (`zai:glm-4.7`) bypasses the filter: pinned means
-  pinned, and an upstream rejection is relayed. As a safety net, if a
-  provider rejects a request as unsupported media anyway (e.g. the configured
-  default model lacks vision despite the provider claiming it), the proxy
-  fails over to the next capable provider rather than relaying the error —
-  except when it was the last option left.
-- `GET /admin/pools` shows per-account health, cooldowns, and counters.
-- Pool cooldowns persist to `server.state_file` across restarts.
+How It Works (technical write-up)
 
-## Admin UI
+Routing
+- The conversation transcript (truncated to `classifier.max_chars`) goes to the local judge with a short system prompt asking for a single integer from 1 to 10. The default thresholds map that onto the tiers: trivial up to 2, moderate from 3, complex from 6, hardcore from 9 (`routing.trivial_max`, `moderate_min`, `complex_min`, `hardcore_min`).
+- If the judge is down or answers with something that isn't a number, a heuristic scores the prompt instead: longer text scores higher, a list of hard words (prove, architecture, race condition, compiler and similar) pushes it up, and short greetings pull it down.
+- Prompts above `classifier.oversize_ratio` of the judge's context window skip the judge altogether (an overflowing judge is unreliable) and use the heuristic, floored at `routing.moderate_min`. The context size is probed from LM Studio at startup and corrected from any overflow error seen later, or you can set `classifier.context_chars` by hand.
+- A `model` value other than `auto` bypasses judging: a tier name forces that tier, a provider name pins that provider's default model, `provider:model` pins both.
 
-Open `http://127.0.0.1:8480/admin` (also `/`) for a built-in dashboard:
+Account pools
+- Each provider holds a list of accounts. Selection prefers the healthy account that is least busy, then least recently used.
+- 429 and 402 responses (and error bodies that sound like quota) park the account for `quota_cooldown_seconds` (600 by default). Auth failures park it for `auth_failure_cooldown_seconds` (3600). Server and network errors back off exponentially from 5 seconds up to a 60 second cap. Other 4xx errors are relayed as they are, with no retry.
+- When every account in a tier is cooling down the proxy walks to the tiers below first, then the ones above, if `routing.fallback_to_other_tiers` is on.
+- Cooldowns are written to `server.state_file` so a restart doesn't forget which accounts are parked.
 
-- edit routing thresholds, the difficulty classifier, tier assignments and
-  provider accounts — changes hot-apply without a restart
-- add/remove API keys per provider account
-- watch live pool status (cooldowns, failure streaks, counters) and reset
-  stuck accounts
-- fire a test request and see which tier/provider/account it routed to
+Capabilities
+- Each provider lists what it accepts: `text` (required), `image`, `video`, `audio`, `file`, `reasoning`.
+- Requests containing `image_url`, `video_url`, `input_audio` or `file` parts, or asking for reasoning (`reasoning_effort`, `reasoning`, `enable_thinking`, `thinking`), are only routed to providers declaring the matching capability. The tier is chosen as usual and incapable providers are skipped, sliding across tiers when needed. If nothing qualifies the proxy returns a 400 rather than forwarding a request that can't work.
+- Pinning a provider bypasses the filter and an upstream rejection is relayed. If a provider rejects media as unsupported anyway (a default model without vision, say), the proxy fails over to the next capable provider unless it was the last one.
 
-UI edits persist to `ui-settings.json` (configurable via
-`server.settings_file`, `null` disables) as an overlay that is deep-merged
-over your YAML config on startup — the YAML file stays the base of truth and
-is never modified. The overlay stores keys in plaintext, so keep it out of
-version control (already in `.gitignore`).
-
-The REST API behind the UI, if you want to script it:
-
-| endpoint | method | purpose |
-|---|---|---|
-| `/admin/api/settings` | GET | effective settings, keys masked |
-| `/admin/api/settings` | PUT | apply + persist settings |
-| `/admin/api/pools/{provider}/accounts/{index}/reset` | POST | clear an account's cooldown |
-| `/admin/pools` | GET | raw pool snapshot |
-
-Keys are returned masked (`xxx••••abcd`); sending a masked value back means
-"keep the current key". If `server.api_key` is set, admin endpoints (and the
-UI's requests) require it as a Bearer token.
-
-## Spending guardrails
-
-Reasoning models (e.g. GLM-5.3 with thinking enabled) can burn large token
-budgets before writing any visible answer. The proxy has a precedence model:
-
-**explicit client value > tier policy > provider default**
-
-- **Tier policies** (`tier_policies` per trivial/moderate/complex/hardcore, editable in the
-  UI under each tier): a `max_tokens` default (injected only when the client
-  sends none) and `extra_body` defaults (deep-merged field-by-field only
-  where the client stayed silent — so a client asking for a specific
-  reasoning level always gets it).
-- **Provider** `extra_body`: endpoint-level defaults, same fill-in-the-gaps
-  rule, overridden by tier policy.
-- **Provider** `max_tokens_cap`: an opt-in absolute clamp applied last no
-  matter who asked for what. Off by default; use it only when you want a
-  hard ceiling on a provider.
-
-Example: bound routine work but leave hard tasks to the client:
+Spending guardrails
+- The precedence is explicit client value, then tier policy, then provider default.
+- `tier_policies` set a default `max_tokens` (only injected when the client sent none) and `extra_body` fields (deep-merged only where the client stayed silent, so a client asking for a specific reasoning level always gets it).
+- A provider's `extra_body` works the same way one level down, and `max_tokens_cap` is an opt-in hard clamp applied last.
 
 ```yaml
 tier_policies:
@@ -130,24 +92,36 @@ tier_policies:
   hardcore: {}      # client decides
 ```
 
-## Providers are generic
+Settings and the admin overlay
+- `config.yaml` is the base. Admin page edits are saved to `ui-settings.json` (set `server.settings_file` to `null` to turn this off) and deep-merged over the YAML at startup. The YAML file is never rewritten.
+- The overlay holds keys in plain text, so it is in `.gitignore`. Keys come back from the API masked, and sending a masked value back means keep the current key.
+- Providers are generic labels: any name, any number, any tier. Deleting one in the UI unassigns it and the deletion persists. A tier can't be left empty.
+- Set `server.api_key` to require `Authorization: Bearer <key>` on the proxy and admin endpoints.
 
-Provider names are arbitrary labels — `local`, `zai` and friends in the
-example config are just conventions. Add, edit and delete providers freely in
-the admin UI (or by editing `config.yaml`); each is an OpenAI-compatible
-endpoint with any number of rotating accounts, assignable to any tier, and
-pinnable per-request as `name` or `name:model`. Deleting a provider in the UI
-unassigns it and persists the deletion across restarts; a tier can never be
-left empty.
+Response metadata
+- Headers: `X-Proxy-Tier`, `X-Proxy-Provider`, `X-Proxy-Account`, `X-Proxy-Difficulty`, `X-Proxy-Difficulty-Method`.
+- Non-streaming bodies also carry an `inference_proxy` object with the same values.
 
-## Configuration
+Key Endpoints
+- `POST /v1/chat/completions` and `GET /v1/models`: the OpenAI-compatible API.
+- `GET /healthz`: liveness.
+- `/` or `/admin`: the admin page.
+- `GET /admin/pools`: per-account health, cooldowns and counters.
+- `GET /admin/api/settings`: effective settings with keys masked. `PUT` applies and saves them.
+- `POST /admin/api/pools/{provider}/accounts/{index}/reset`: clear one account's cooldown.
+- `GET /admin/api/recent`: the recent request log behind the admin page.
 
-See `config.example.yaml`. All `${VAR}` / `${VAR:-default}` references expand
-from the environment, so keys never need to live in the file.
+Repo Structure
+- `src/inference_proxy/`: `main.py` (FastAPI app and admin API), `router.py` (tiers), `classifier.py` (difficulty judge and heuristic), `pool.py` (accounts and cooldowns), `upstream.py` (error classification), `media.py` and `context.py` (capability detection and context sizing), `config.py` and `settings.py` (YAML plus the UI overlay), `static/index.html` (admin page).
+- `tests/`: pytest with the upstreams mocked.
+- `config.example.yaml`: a commented starting point.
+- `docs/`: the header image.
 
-## Development
+Development
+- Tests: `uv run pytest`.
+- Auto-reload while editing: `uv run uvicorn inference_proxy.main:create_app --factory --reload`.
+- Config is read from `./config.yaml`, or from the path in `INFERENCE_PROXY_CONFIG`.
 
-```bash
-uv run pytest          # tests
-uv run uvicorn inference_proxy.main:create_app --factory --reload
-```
+License
+- CC BY-NC-SA 4.0: https://creativecommons.org/licenses/by-nc-sa/4.0/
+- Attribution, non-commercial use and share-alike required: link this source and the licence and indicate changes. Third-party licences and previous grants are preserved.
