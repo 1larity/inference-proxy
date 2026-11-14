@@ -61,6 +61,7 @@ Using Claude or Codex instead of an API key
 - Install the app (`claude` or `codex`) and sign in to it once in a terminal.
 - In `config.yaml` add a provider with `type: claude` (or `codex`), list it in the tiers you want, and set `default_model` (`sonnet`, `opus` and `haiku` for Claude). No key is needed.
 - These answer in one piece (no word-by-word streaming) and can't return tool calls. A request that defines tools (a coding agent, say) is never sent to one: the proxy skips it and uses your API providers, or answers with a clear error if there are none. Naming the provider yourself (`claude_cli` as the model) still sends it there.
+- Each Claude call carries the app's own instructions (roughly 40,000 tokens, mostly served from its cache), so these providers suit harder jobs better than quick questions. The whole conversation is also sent again on every turn, and that part isn't cached: a 20,000 character history makes a call about 1.7 times dearer than an empty one, and 80,000 characters about 4 times (measured with Claude Haiku). Keep them out of the trivial tier and away from very long sessions.
 - Every request starts a fresh CLI session and sends the whole conversation again, then removes the session record it leaves behind (Codex runs with `--ephemeral`), so the CLI never holds its own copy of the conversation and your editor's history stays the only one.
 
 Keeping your local model loaded
