@@ -12,6 +12,8 @@ Highlights
 - Media aware: requests with images, video, audio or files (or asking for reasoning) only go to providers that say they can handle them.
 - Spending guardrails: per-tier token limits and request defaults, so a reasoning model can't quietly burn a month of budget on one prompt.
 - Claude and Codex as providers: the command-line apps can answer requests, so a subscription can sit in a tier next to your API keys.
+- Local models stay loaded: pin an endpoint to one model and the proxy never makes a consumer-grade machine swap models mid-request.
+- A model ladder: independent scores (Epoch AI, optionally Artificial Analysis) and your price table suggest up to 10 rungs from the cheapest capable model to the strongest, and the four tiers to fill from them.
 - Models, not just providers: a different model per tier, automatic stand-ins when a model is retired, and a price table you refresh and approve.
 - Admin page: edit thresholds, tiers, providers and keys in the browser, watch account health, run a test request. Changes apply without a restart.
 
@@ -60,6 +62,21 @@ Using Claude or Codex instead of an API key
 - In `config.yaml` add a provider with `type: claude` (or `codex`), list it in the tiers you want, and set `default_model` (`sonnet`, `opus` and `haiku` for Claude). No key is needed.
 - These answer in one piece (no word-by-word streaming) and can't call tools, so leave them out of tiers that serve coding agents which need tools.
 
+Keeping your local model loaded
+- Servers such as LM Studio load whichever model a request names, and swapping on a home PC can take half a minute. Add `pin_model: true` to the local provider (it then only ever uses its `default_model`), or list the endpoint under `pinned_models` in `config.yaml`.
+- A pinned endpoint also pins the difficulty judge if the judge lives there, so judging and answering use the same loaded model.
+- If the pinned model is missing the proxy moves on to the next provider and does not ask the local server for another model.
+
+Choosing models: the ladder
+- In the admin page open Models and prices, press Refresh scores, then look at the ladder. It lists up to 10 rungs, each covering a band of difficulty scores, from the weakest cheap model to the strongest, and says which model it would put in each of your four tiers.
+- Scores come from Epoch AI's Capabilities Index (free, no sign-up) and, if you add your own free Artificial Analysis key, their intelligence index and speed. They help order models, they don't prove quality.
+- Tolerance is how much quality you will give up for a cheaper or faster model (3% by default). A fast model that scores 2% lower than the flagship wins at the default, as long as it is cheaper in the price table. On a flat-rate plan, type relative weights into the price table by hand (say 1 for the flash model and 3 for the full one), because the plan has no per-token price.
+- Nothing is changed for you: the ladder is a suggestion to copy into your tiers.
+
+Letting it do the homework (optional, off by default)
+- With `research.enabled: true` the proxy refreshes prices and scores every few days. If you give it a Claude CLI provider and the pricing page for a provider, it asks Claude to read the page and lists what it found as price proposals.
+- Everything it finds waits for you in the admin page. The pages it reads are treated as data, never as instructions, and a proposal is only accepted for a model the provider really lists, at a plausible price, with an https source.
+
 Keeping prices up to date
 - In the admin page open Prices and press Refresh. The proxy asks each provider what it offers and files any new, changed or retired prices as proposals. Nothing changes until you press Apply (or Reject).
 - Prices you type in yourself are kept as they are. Anything older than two weeks is marked stale.
@@ -101,6 +118,21 @@ Prices and usage
 - The ledger records the tokens each upstream reports (for streams, when the final chunk carries usage) and the cost. `GET /admin/api/usage?days=7` totals it by provider, model and tier.
 - `server.data_db` is the SQLite file that holds both (in memory if unset).
 
+Endpoint pinning
+- `pinned_models` maps an endpoint's base URL (compared without a trailing slash, ignoring case) to its one model. A provider with `pin_model: true` pins its `default_model`. Two providers pinning one endpoint to different models is a startup error.
+- On a pinned endpoint the proxy ignores `tier_models` and `fallback_models`, skips the sibling-model search and uses the pinned model for the difficulty judge. A request pinned by the client as `provider:model` is the one thing that can still change the model.
+- CLI providers have no endpoint, so a pin has no effect on them.
+
+Scores and the ladder
+- Scores are stored with their source in the same SQLite file as prices. Model ids are matched after normalising case and punctuation (`GLM-5.3-Flash` and `z-ai/glm-5.3-flash` are the same key, and a trailing `-gguf` is ignored), so an unlisted model simply has no score and shows under "unscored".
+- `POST /admin/api/scores/refresh` downloads Epoch's data (CC BY 4.0, credit shown) and, with `benchmarks.aa_api_key`, Artificial Analysis (free tier, 100 requests per 24 hours, credit shown).
+- `GET /admin/api/ladder?rungs=10&tolerance=0.03&source=epoch` builds the ladder from the models each provider lists. Candidates are one per endpoint and model, and a pinned endpoint offers only its pinned model. For each rung it takes the model at that quantile of the score range, then swaps in any model within the tolerance that costs less, then is faster, then scores higher. The four tiers take the rungs nearest their difficulty bands (1-2, 3-5, 6-8, 9-10), and `suggested_tier_models` is a block ready to paste into the config.
+- The ladder is advice for the four named tiers. Routing still uses four tiers.
+
+Research job
+- `research.enabled` starts a background loop that runs every `every_days` (the last run is kept in the database, so a restart doesn't repeat it). Each pass refreshes provider prices, refreshes scores and, for each entry in `research.price_pages`, asks the `research.cli_provider` (type `claude`, the only CLI with web tools here) to read the page with WebSearch and WebFetch only.
+- Only strict JSON is accepted. Models must already be in the provider's catalogue, prices must be numbers from 0 to 1000 and the source must be an https URL. The result becomes a proposal and is never applied automatically. `POST /admin/api/research/prices` runs one provider on demand.
+
 Spending guardrails
 - The precedence is explicit client value, then tier policy, then provider default.
 - `tier_policies` set a default `max_tokens` (only injected when the client sent none) and `extra_body` fields (deep-merged only where the client stayed silent, so a client asking for a specific reasoning level always gets it).
@@ -133,6 +165,9 @@ Key Endpoints
 - `GET /admin/api/models`, `POST /admin/api/models/refresh`: the model catalogue.
 - `GET /admin/api/prices`, `PUT /admin/api/prices` (set one by hand), `POST /admin/api/prices/refresh`, `/apply`, `/reject`: the price table.
 - `GET /admin/api/usage?days=7`: cost and tokens by provider, model and tier.
+- `GET /admin/api/scores`, `POST /admin/api/scores/refresh`: independent benchmark scores and their credits.
+- `GET /admin/api/ladder`: the suggested model ladder (query: `rungs`, `tolerance`, `source`).
+- `POST /admin/api/research/prices`: ask a Claude CLI provider to read a pricing page and file proposals.
 - `GET /admin/pools`: per-account health, cooldowns and counters.
 - `GET /admin/api/settings`: effective settings with keys masked. `PUT` applies and saves them.
 - `POST /admin/api/pools/{provider}/accounts/{index}/reset`: clear one account's cooldown.

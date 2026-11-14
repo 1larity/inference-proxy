@@ -111,6 +111,29 @@ def _completion(model: str, text: str, stream: bool) -> httpx.Response:
     return _response(200, "text/event-stream", data.encode())
 
 
+async def ask_cli(tool: str, prompt: str, model: str | None = None, timeout: float = 300.0, web: bool = False) -> str:
+    """One prompt in, text out. With web=True the Claude CLI may use WebSearch and WebFetch (nothing else)."""
+    if not shutil.which(tool):
+        raise RuntimeError(f"{tool} is not installed or not on PATH")
+    if web and tool != "claude":
+        raise ValueError("web research needs the claude provider")
+    cmd = command(tool, model, [])
+    if web:
+        cmd += ["--allowedTools", "WebSearch", "WebFetch"]
+    with tempfile.TemporaryDirectory(prefix="inference-proxy-") as tmp:
+        proc = await asyncio.create_subprocess_exec(*cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                                                    stderr=asyncio.subprocess.PIPE, cwd=tmp)
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError(f"{tool} did not answer within {timeout:.0f}s") from None
+    if proc.returncode:
+        raise RuntimeError((err.decode("utf-8", "replace") or out.decode("utf-8", "replace")).strip()[:300] or f"{tool} exited with {proc.returncode}")
+    return out.decode("utf-8", "replace").strip()
+
+
 async def run_cli(tool: str, model: str | None, body: dict, timeout: float, stream: bool) -> httpx.Response:
     if not shutil.which(tool):
         return _error(503, f"{tool} is not installed or not on PATH")

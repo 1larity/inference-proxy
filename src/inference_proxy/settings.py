@@ -21,6 +21,7 @@ MASK = "\u2022\u2022\u2022\u2022"
 
 ROUTING_FIELDS = ("trivial_max", "moderate_min", "complex_min", "hardcore_min", "fallback_difficulty", "fallback_to_other_tiers")
 CLASSIFIER_FIELDS = (
+    "provider",
     "base_url",
     "api_key",
     "model",
@@ -31,8 +32,13 @@ CLASSIFIER_FIELDS = (
     "oversize_ratio",
 )
 PROVIDER_FIELDS = (
+    "type",
     "base_url",
     "default_model",
+    "tier_models",
+    "fallback_models",
+    "models",
+    "pin_model",
     "timeout_seconds",
     "quota_cooldown_seconds",
     "auth_failure_cooldown_seconds",
@@ -135,8 +141,13 @@ def settings_view(
         },
         "providers": {
             name: {
+                "type": provider.type,
                 "base_url": provider.base_url,
                 "default_model": provider.default_model,
+                "tier_models": dict(provider.tier_models),
+                "fallback_models": list(provider.fallback_models),
+                "models": list(provider.models),
+                "pin_model": provider.pin_model,
                 "timeout_seconds": provider.timeout_seconds,
                 "quota_cooldown_seconds": provider.quota_cooldown_seconds,
                 "auth_failure_cooldown_seconds": provider.auth_failure_cooldown_seconds,

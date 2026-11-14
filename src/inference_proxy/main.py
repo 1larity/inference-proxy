@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 from collections import deque
@@ -27,12 +29,15 @@ from pydantic import ValidationError
 from starlette.background import BackgroundTask
 
 from .classifier import classify_difficulty
-from .cli import CLI_TYPES, run_cli
-from .config import ConfigError, ProxyConfig, load_config, load_config_dict
+from .benchmarks import SOURCES, ScoreStore, fetch_aa, fetch_epoch
+from .cli import CLI_TYPES, ask_cli, run_cli
+from .config import ConfigError, ProxyConfig, compute_pins, endpoint_key, load_config, load_config_dict
 from .context import ContextRegistry, probe_model_context
 from .media import media_capabilities, required_capabilities
-from .models import ModelCatalog
+from .models import ModelCatalog, is_chat_model
+from .ladder import is_local_url, suggest as suggest_ladder
 from .pricing import PriceStore, extract_price
+from .research import build_prompt as research_prompt, validate as research_validate
 from .pool import (
     MODEL,
     NETWORK,
@@ -107,6 +112,7 @@ def create_app(
     context_registry = ContextRegistry()
     catalog = ModelCatalog()
     prices = PriceStore(config.server.data_db)
+    scores = ScoreStore(prices.db)
     judge_state: dict = {"resolved": None, "note": None}
     recent: deque = deque(maxlen=RECENT_LIMIT)
     if not logging.getLogger().handlers:
@@ -126,9 +132,18 @@ def create_app(
                     "timeout_seconds": max(config.classifier.timeout_seconds, 30.0)}
         )
 
+    def pin_for(base_url: str) -> str | None:
+        """The model this endpoint is pinned to, if any."""
+        return compute_pins(config).get(endpoint_key(base_url))
+
     def current_judge():
-        """The classifier settings in force: the local server, or a hosted provider chosen by classifier.provider."""
-        return judge_state["resolved"] or config.classifier
+        """The classifier settings in force: the local server, or a hosted provider chosen by classifier.provider.
+
+        A judge on a pinned endpoint uses the pinned model, so judging never makes that server swap models.
+        """
+        judge = judge_state["resolved"] or config.classifier
+        pinned = pin_for(judge.base_url)
+        return judge.model_copy(update={"model": pinned}) if pinned and pinned != judge.model else judge
 
     async def resolve_judge() -> None:
         wanted = config.classifier.provider
@@ -170,9 +185,12 @@ def create_app(
         )
         if config.server.state_file:
             load_pool_state(config.server.state_file, pools)
+        research_task = asyncio.create_task(scheduled_research()) if config.research.enabled else None
         try:
             yield
         finally:
+            if research_task:
+                research_task.cancel()
             if config.server.state_file:
                 try:
                     save_pool_state(config.server.state_file, pools)
@@ -187,6 +205,7 @@ def create_app(
     app.state.router = router
     app.state.catalog = catalog
     app.state.prices = prices
+    app.state.scores = scores
     app.state.judge_state = judge_state
     app.state.context_registry = context_registry
     app.state.raw_config = merged
@@ -371,6 +390,9 @@ def create_app(
                 tried_accounts.add(account.id)
 
                 upstream_model = candidates[model_index]
+                pinned_here = None if model_override or pool.config.type in CLI_TYPES else pin_for(account.base_url)
+                if pinned_here:  # an explicit provider:model from the client is honoured; the proxy's own choices are not
+                    upstream_model = pinned_here
                 if not upstream_model and pool.config.type not in CLI_TYPES:
                     pool.release(account)
                     return JSONResponse(
@@ -436,7 +458,7 @@ def create_app(
                             "error": read_error_detail(response.status_code, error_body),
                         }
                     )
-                    if len(candidates) == 1:
+                    if len(candidates) == 1 and not pinned_here:
                         if not pool.config.fallback_models:  # configured stand-ins need no discovery
                             await catalog.ensure(app.state.http, pool)
                         candidates.extend(catalog.siblings(pool, {m for m in candidates if m}))
@@ -677,7 +699,7 @@ def create_app(
         unauthorized = check_auth(request)
         if unauthorized:
             return unauthorized
-        return JSONResponse(content={"providers": catalog.snapshot(), "judge": judge_state["note"]})
+        return JSONResponse(content={"providers": catalog.snapshot(), "judge": judge_state["note"], "pins": compute_pins(config)})
 
     async def models_refresh(request: Request):
         unauthorized = check_auth(request)
@@ -685,7 +707,7 @@ def create_app(
             return unauthorized
         for pool in pools.values():
             await catalog.refresh(app.state.http, pool)
-        return JSONResponse(content={"providers": catalog.snapshot(), "judge": judge_state["note"]})
+        return JSONResponse(content={"providers": catalog.snapshot(), "judge": judge_state["note"], "pins": compute_pins(config)})
 
     def price_view() -> dict:
         now = time.time()
@@ -718,6 +740,141 @@ def create_app(
                 if kind:
                     changes.append({"provider": name, "model": model, "kind": kind})
         return changes
+
+    async def refresh_scores(source: str = "all") -> dict:
+        """Download independent scores. Epoch needs nothing; Artificial Analysis needs your own free key."""
+        done: dict = {}
+        if source in ("epoch", "all"):
+            try:
+                done["epoch"] = scores.replace("epoch", await fetch_epoch(app.state.http))
+            except (httpx.HTTPError, ValueError, OSError) as exc:
+                done["epoch"] = f"failed: {exc}"[:200]
+        if source in ("aa", "all"):
+            key = config.benchmarks.aa_api_key
+            if not key:
+                done["aa"] = "skipped: no Artificial Analysis API key (benchmarks.aa_api_key)"
+            else:
+                try:
+                    done["aa"] = scores.replace("aa", await fetch_aa(app.state.http, key))
+                except (httpx.HTTPError, ValueError) as exc:
+                    done["aa"] = f"failed: {exc}"[:200]
+        return done
+
+    def ladder_candidates(source: str | None) -> list[dict]:
+        """Models that could fill a rung: one entry per endpoint and model, pinned endpoints limited to their one model."""
+        seen, out = set(), []
+        for name, pool in pools.items():
+            if pool.config.type != "openai" or not pool.accounts:
+                continue
+            base = pool.accounts[0].base_url
+            pinned = pin_for(base)
+            entry = catalog.entries.get(name) or {}
+            models = [pinned] if pinned else [m for m in (entry.get("models") or [pool.config.default_model]) if m]
+            for model in models:
+                key = (endpoint_key(base), model)
+                if key in seen:
+                    continue
+                seen.add(key)
+                found = scores.lookup(model, source)
+                price = prices.active(name, model)
+                out.append({"provider": name, "model": model, "score": found["score"] if found else None,
+                            "tokens_per_s": (found or {}).get("detail", {}).get("tokens_per_s"),
+                            "score_source": found["source"] if found else None,
+                            "input_per_m": price["input_per_m"] if price else None, "output_per_m": price["output_per_m"] if price else None,
+                            "pinned": bool(pinned), "local": is_local_url(base)})
+        return [c for c in out if is_chat_model(c["model"])]
+
+    async def scores_get(request: Request):
+        unauthorized = check_auth(request)
+        return unauthorized or JSONResponse(content={"sources": scores.summary()})
+
+    async def scores_refresh(request: Request):
+        unauthorized = check_auth(request)
+        if unauthorized:
+            return unauthorized
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        source = (body or {}).get("source", "all")
+        if source not in ("epoch", "aa", "all"):
+            return JSONResponse(status_code=400, content={"error": {"message": "source must be epoch, aa or all"}})
+        return JSONResponse(content={"result": await refresh_scores(source), "sources": scores.summary()})
+
+    async def ladder_get(request: Request):
+        unauthorized = check_auth(request)
+        if unauthorized:
+            return unauthorized
+        try:
+            rungs = int(request.query_params.get("rungs", 10))
+        except ValueError:
+            rungs = 10
+        try:
+            tolerance = max(0.0, min(0.2, float(request.query_params.get("tolerance", 0.03))))
+        except ValueError:
+            tolerance = 0.03
+        source = request.query_params.get("source") or None
+        if source not in (None, *SOURCES):
+            return JSONResponse(status_code=400, content={"error": {"message": f"source must be one of {list(SOURCES)}"}})
+        result = suggest_ladder(ladder_candidates(source), rungs, tolerance)
+        patch = {}
+        for tier, pick in result["tiers"].items():
+            patch.setdefault(pick["provider"], {"tier_models": {}})["tier_models"][tier] = pick["model"]
+        return JSONResponse(content={**result, "suggested_tier_models": patch, "sources": scores.summary()})
+
+    async def research_prices(provider: str, cli_provider: str, url: str | None = None) -> dict:
+        """Ask a Claude CLI provider to read a pricing page; file what it finds as proposals only."""
+        pool, cli_pool = pools.get(provider), pools.get(cli_provider)
+        if pool is None or cli_pool is None or cli_pool.config.type != "claude":
+            raise ValueError("research needs a known provider and a provider of type claude")
+        entry = await catalog.ensure(app.state.http, pool)
+        known = [m for m in entry["models"] if is_chat_model(m)]
+        text = await ask_cli("claude", research_prompt(known, url), cli_pool.config.default_model, cli_pool.config.timeout_seconds, web=True)
+        match = re.search(r"\{.*\}", text, re.S)
+        if match is None:
+            raise ValueError("the research answer was not JSON, so nothing was read")
+        rows = research_validate(json.loads(match.group(0)), known)
+        changes = []
+        for row in rows:
+            kind = prices.propose(provider, row["model"], (row["input_per_m"], row["output_per_m"], None), "web research", row["source_url"])
+            if kind:
+                changes.append({"provider": provider, "model": row["model"], "kind": kind})
+        return {"read": len(rows), "changes": changes}
+
+    async def research_post(request: Request):
+        unauthorized = check_auth(request)
+        if unauthorized:
+            return unauthorized
+        body = await request.json()
+        try:
+            cli = body.get("cli_provider") or config.research.cli_provider
+            provider = str(body["provider"])
+            result = await research_prices(provider, str(cli), body.get("url") or config.research.price_pages.get(provider))
+        except (KeyError, ValueError, RuntimeError) as exc:
+            return JSONResponse(status_code=400, content={"error": {"message": str(exc)[:300]}})
+        return JSONResponse(content={**result, **price_view()})
+
+    async def scheduled_research() -> None:
+        """If the owner turned research on: refresh prices and scores, and read price pages, every few days. Proposals only."""
+        while True:
+            last = float(prices.meta_get("research_last_run") or 0)
+            wait = last + config.research.every_days * 86400 - time.time()
+            if wait > 0:
+                await asyncio.sleep(min(wait, 3600))
+                continue
+            try:
+                await refresh_prices(False)
+                await refresh_scores("all")
+                for provider, url in config.research.price_pages.items():
+                    if config.research.cli_provider and provider in pools:
+                        try:
+                            await research_prices(provider, config.research.cli_provider, url)
+                        except (ValueError, RuntimeError) as exc:
+                            logger.warning("research: %s: %s", provider, exc)
+                logger.info("research: scheduled refresh finished; proposals are waiting in the admin page")
+            except Exception as exc:  # a failed pass must not end the schedule
+                logger.warning("research: scheduled refresh failed: %s", exc)
+            prices.meta_set("research_last_run", str(time.time()))
 
     async def prices_get(request: Request):
         unauthorized = check_auth(request)
@@ -790,6 +947,10 @@ def create_app(
     app.add_api_route("/admin/api/prices/apply", prices_apply, methods=["POST"])
     app.add_api_route("/admin/api/prices/reject", prices_reject, methods=["POST"])
     app.add_api_route("/admin/api/usage", usage_get, methods=["GET"])
+    app.add_api_route("/admin/api/scores", scores_get, methods=["GET"])
+    app.add_api_route("/admin/api/scores/refresh", scores_refresh, methods=["POST"])
+    app.add_api_route("/admin/api/ladder", ladder_get, methods=["GET"])
+    app.add_api_route("/admin/api/research/prices", research_post, methods=["POST"])
     app.add_api_route("/healthz", healthz, methods=["GET"])
     return app
 

@@ -62,6 +62,24 @@ routing:
 # to providers that declare the matching capability, skipping tiers if
 # needed. Values: text, image, video, audio, file, reasoning. Every
 # provider must list text.
+# Local servers that swap models on demand (LM Studio, llama.cpp router) stall for many seconds on every swap.
+# Pin an endpoint to one model and the proxy never asks it for another: tier models, stand-ins and the difficulty
+# judge on that endpoint all use the pinned one. (A request that names provider:model is still honoured.)
+# pinned_models:
+#   http://127.0.0.1:1234/v1: qwen3.5        # or set pin_model: true on a provider to pin its default_model
+
+# Independent scores for the ladder suggestion (Settings, Models and prices). Epoch AI's index needs nothing.
+# benchmarks:
+#   aa_api_key: ${ARTIFICIAL_ANALYSIS_API_KEY}   # your own free key from artificialanalysis.ai (credit is shown in the admin page)
+
+# Off by default. When on, every few days the proxy refreshes provider prices and benchmark scores, and may ask a
+# Claude CLI provider to read the pricing pages you list. It only ever files proposals for you to apply or reject.
+# research:
+#   enabled: true
+#   cli_provider: claude_cli          # a provider with type: claude
+#   every_days: 7
+#   price_pages: {zai: https://z.ai/pricing}
+
 tiers:
   trivial: [local]              # score <= 2: local cheap model
   moderate: [zai]               # providers tried in order within the tier

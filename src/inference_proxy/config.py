@@ -62,6 +62,9 @@ class ProviderConfig(BaseModel):
     # Tried, in order, when the chosen model is missing or retired. When empty,
     # models found through the provider's /models list are used.
     fallback_models: list[str] = Field(default_factory=list)
+    # Keep this provider's endpoint on default_model only. A local server that swaps models on demand
+    # (LM Studio, llama.cpp router) stalls for many seconds on each swap, so the proxy never asks it for another.
+    pin_model: bool = False
     # Models offered by a provider that has no /models endpoint (the CLIs).
     models: list[str] = Field(default_factory=list)
     timeout_seconds: float = 120.0
@@ -159,6 +162,21 @@ class ServerConfig(BaseModel):
     price_stale_days: int = Field(default=14, ge=1)
 
 
+class BenchmarksConfig(BaseModel):
+    # Your own free Artificial Analysis API key (https://artificialanalysis.ai). Credit is shown in the admin page.
+    aa_api_key: str | None = None
+
+
+class ResearchConfig(BaseModel):
+    """Off by default. When on, the proxy refreshes scores and prices on a schedule and may ask a Claude CLI provider to
+    read pricing pages. It only ever creates proposals, which you apply or reject in the admin page."""
+
+    enabled: bool = False
+    cli_provider: str | None = None   # a provider with type: claude
+    every_days: int = Field(default=7, ge=1)
+    price_pages: dict[str, str] = Field(default_factory=dict)  # provider name -> pricing page URL
+
+
 def fill_missing_tiers(tiers: dict[str, list[str]], providers: list[str]) -> dict[str, list[str]]:
     """Tiers left out of the config take the providers of the nearest tier that lists some.
 
@@ -186,6 +204,10 @@ class ProxyConfig(BaseModel):
     tiers: dict[str, list[str]] = Field(default_factory=dict)
     providers: dict[str, ProviderConfig]
     tier_policies: dict[str, TierPolicy] = Field(default_factory=dict)
+    benchmarks: BenchmarksConfig = Field(default_factory=lambda: BenchmarksConfig())
+    research: ResearchConfig = Field(default_factory=lambda: ResearchConfig())
+    # Endpoint base URL -> the one model the proxy may ask it for (also pins the difficulty judge on that endpoint).
+    pinned_models: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -226,7 +248,27 @@ class ProxyConfig(BaseModel):
         }
         if unknown:
             raise ConfigError(f"tiers reference unknown providers: {sorted(unknown)}")
+        compute_pins(self)  # a pin conflict should stop startup, not surface on the first request
         return self
+
+
+def endpoint_key(url: str) -> str:
+    return url.strip().rstrip("/").lower()
+
+
+def compute_pins(config: ProxyConfig) -> dict[str, str]:
+    """Endpoint -> pinned model, from pinned_models and providers marked pin_model."""
+    pins = {endpoint_key(url): model for url, model in config.pinned_models.items() if model}
+    for name, provider in config.providers.items():
+        if not provider.pin_model or provider.type != "openai":
+            continue
+        if not provider.default_model:
+            raise ConfigError(f"provider '{name}' sets pin_model but has no default_model")
+        key = endpoint_key(provider.base_url)
+        if pins.get(key, provider.default_model) != provider.default_model:
+            raise ConfigError(f"endpoint {provider.base_url} is pinned to two models: {pins[key]} and {provider.default_model}")
+        pins[key] = provider.default_model
+    return pins
 
 
 def load_config_dict(path: str | Path) -> dict:

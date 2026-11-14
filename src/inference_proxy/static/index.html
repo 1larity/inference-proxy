@@ -169,6 +169,21 @@
       <h2 style="margin-top:18px">Models</h2><div id="models.list"></div>
       <h2 style="margin-top:18px">Spending</h2><div class="row"><label style="margin:0">Days <select id="usage.days"><option>1</option><option selected>7</option><option>30</option></select></label></div>
       <div style="overflow-x:auto"><table id="usage.table"><thead><tr><th>Provider</th><th>Model</th><th>Tier</th><th>Requests</th><th>Tokens</th><th>Cost</th></tr></thead><tbody></tbody></table></div><div class="hint" id="usage.total"></div>
+      <h2 style="margin-top:18px">Scores and model ladder</h2>
+      <div class="hint">Independent scores help order models. They are a guide, not proof of quality.</div>
+      <div class="row" style="flex-wrap:wrap"><button class="primary narrow" id="scores.refresh">Refresh scores</button><span class="hint" id="scores.refresh-result" aria-live="polite"></span></div>
+      <div id="scores.sources" class="hint"></div>
+      <div class="fields" style="margin-top:10px">
+        <div><label for="ladder.rungs">Number of rungs</label><input type="number" id="ladder.rungs" min="1" max="10" step="1" value="10"></div>
+        <div><label for="ladder.tolerance">How much quality will you give up for cheaper or faster? <span id="ladder.tolerance-value">3%</span></label><input type="range" id="ladder.tolerance" min="0" max="10" step="1" value="3"></div>
+        <div><label for="ladder.source">Score source</label><select id="ladder.source"><option value="">Any</option><option value="epoch">Epoch</option><option value="aa">Artificial Analysis</option></select></div>
+      </div>
+      <div id="ladder.empty" class="hint" hidden>No scores yet. Press Refresh scores.</div>
+      <div style="overflow-x:auto;margin-top:10px"><table id="ladder.table"><thead><tr><th>Rung</th><th>Difficulty range</th><th>Provider</th><th>Model</th><th>Score</th><th>Price / million</th><th>Speed</th><th></th></tr></thead><tbody></tbody></table></div>
+      <h2 style="margin-top:18px">Suggested for your four tiers</h2>
+      <div id="ladder.tiers" class="hint"></div>
+      <button class="small" id="ladder.copy" style="margin-top:8px">Copy as YAML</button>
+      <details style="margin-top:12px"><summary>Models without a score</summary><div id="ladder.unscored" class="hint"></div></details>
     </div>
   </div>
 
@@ -799,6 +814,119 @@ $("#models.refresh").addEventListener("click",async()=>{try{await api("/admin/ap
 $("#prices.manual").addEventListener("submit",async e=>{e.preventDefault();try{await api("/admin/api/prices",{method:"PUT",body:JSON.stringify({provider:$("#prices.provider").value,model:$("#prices.model").value.trim(),input_per_m:Number($("#prices.input").value),output_per_m:Number($("#prices.output").value)})});e.target.reset();await loadPrices();toast("Price saved",true);}catch(err){toast("Could not set price - "+err.message,false);}});
 $("#usage.days").addEventListener("change",loadUsage);
 loadPrices(); loadModels(); loadUsage();
+const SCORE_SOURCES = ["epoch", "aa"];
+let LADDER_DATA = null;
+function ageText(value) {
+  if (value === null || value === undefined || value === "") return "not updated";
+  let time = typeof value === "number" ? value * 1000 : Date.parse(value);
+  if (!Number.isFinite(time)) return "not updated";
+  const seconds = Math.max(0, Math.floor((Date.now() - time) / 1000));
+  if (seconds < 60) return "updated just now";
+  if (seconds < 3600) return `updated ${Math.floor(seconds / 60)} min ago`;
+  if (seconds < 86400) return `updated ${Math.floor(seconds / 3600)} hr ago`;
+  return `updated ${Math.floor(seconds / 86400)} days ago`;
+}
+function renderScoreSources(sources) {
+  const host = $("#scores.sources"); host.innerHTML = "";
+  for (const key of SCORE_SOURCES) {
+    const source = (sources || {})[key] || {};
+    const line = document.createElement("div");
+    const name = source.label || (key === "epoch" ? "Epoch" : "Artificial Analysis");
+    line.append(document.createTextNode(`${name}: ${ageText(source.fetched_at)}`));
+    if (Number(source.models || 0) > 0 && source.credit) {
+      line.append(document.createTextNode(" - "));
+      if (key === "aa") {
+        const link = document.createElement("a"); link.href = "https://artificialanalysis.ai";
+        link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = source.credit;
+        line.appendChild(link);
+      } else line.append(document.createTextNode(source.credit));
+    }
+    host.appendChild(line);
+  }
+}
+function appendLadderRow(body, values) {
+  const tr = document.createElement("tr");
+  for (const value of values) {
+    const td = document.createElement("td"); td.textContent = value == null ? "" : String(value); tr.appendChild(td);
+  }
+  body.appendChild(tr);
+}
+function renderLadder(data) {
+  LADDER_DATA = data;
+  renderScoreSources(data.sources);
+  const rungs = data.rungs || [];
+  const body = $("#ladder.table tbody"); body.innerHTML = "";
+  for (const r of rungs) {
+    const price = r.input_per_m == null && r.output_per_m == null
+      ? "free or flat plan" : `${r.input_per_m == null ? "-" : money(r.input_per_m)} / ${r.output_per_m == null ? "-" : money(r.output_per_m)}`;
+    appendLadderRow(body, [r.rung, `${r.difficulty_from}-${r.difficulty_to}`, r.provider, r.model,
+      r.score == null ? "" : r.score, price, r.tokens_per_s == null ? "" : `${r.tokens_per_s} tokens/s`, r.pinned ? "Pinned" : ""]);
+  }
+  const tiers = $("#ladder.tiers"); tiers.innerHTML = "";
+  const suggestions = data.tiers || {};
+  for (const tier of ["trivial", "moderate", "complex", "hardcore"]) {
+    const item = suggestions[tier]; const line = document.createElement("div");
+    line.textContent = `${tier}: ${item ? `${item.provider} / ${item.model}${item.score == null ? "" : ` (${item.score})`}` : "No suggestion"}`;
+    tiers.appendChild(line);
+  }
+  const missing = $("#ladder.unscored"); missing.innerHTML = "";
+  for (const item of data.unscored || []) {
+    const line = document.createElement("div"); line.textContent = `${item.provider} / ${item.model}`; missing.appendChild(line);
+  }
+  const sources = data.sources || {};
+  const noScores = !SCORE_SOURCES.some(key => Number((sources[key] || {}).models || 0) > 0);
+  $("#ladder.empty").hidden = !noScores;
+  $("#ladder.table").parentElement.hidden = noScores;
+  $("#ladder.tiers").hidden = noScores;
+  $("#ladder.copy").hidden = noScores;
+}
+async function loadScoreSources() {
+  const data = await api("/admin/api/scores"); renderScoreSources(data.sources || {});
+}
+async function loadLadder() {
+  const params = new URLSearchParams({
+    rungs: String(Math.min(10, Math.max(1, Number($("#ladder.rungs").value) || 10))),
+    tolerance: String((Number($("#ladder.tolerance").value) || 0) / 100),
+  });
+  if ($("#ladder.source").value) params.set("source", $("#ladder.source").value);
+  try { renderLadder(await api("/admin/api/ladder?" + params.toString())); }
+  catch (e) { toast("Could not load model ladder - " + e.message, false); }
+}
+$("#scores.refresh").addEventListener("click", async () => {
+  const status = $("#scores.refresh-result"); status.textContent = "Refreshing scores…";
+  try {
+    const data = await api("/admin/api/scores/refresh", {method: "POST", body: JSON.stringify({source: "all"})});
+    const results = data.result || {};
+    status.textContent = SCORE_SOURCES.map(key => `${key === "epoch" ? "Epoch" : "Artificial Analysis"}: ${results[key] == null ? "no result" : String(results[key])}`).join("; ");
+    renderScoreSources(data.sources || {}); await loadLadder();
+  } catch (e) { status.textContent = "Refresh failed: " + e.message; toast("Score refresh failed - " + e.message, false); }
+});
+$("#ladder.rungs").addEventListener("change", loadLadder);
+$("#ladder.tolerance").addEventListener("input", () => { $("#ladder.tolerance-value").textContent = $("#ladder.tolerance").value + "%"; });
+$("#ladder.tolerance").addEventListener("change", loadLadder);
+$("#ladder.source").addEventListener("change", loadLadder);
+function suggestedYaml(suggested) {
+  return Object.entries(suggested || {}).map(([provider, data]) => {
+    const lines = [`${JSON.stringify(provider)}:`, "  tier_models:"];
+    for (const tier of ["trivial", "moderate", "complex", "hardcore"]) {
+      if (data && data.tier_models && data.tier_models[tier] != null)
+        lines.push(`    ${tier}: ${JSON.stringify(String(data.tier_models[tier]))}`);
+    }
+    return lines.join("\n");
+  }).join("\n");
+}
+$("#ladder.copy").addEventListener("click", async () => {
+  const yaml = suggestedYaml(LADDER_DATA && LADDER_DATA.suggested_tier_models);
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(yaml);
+    else {
+      const area = document.createElement("textarea"); area.value = yaml; area.style.position = "fixed"; area.style.opacity = "0";
+      document.body.appendChild(area); area.select(); document.execCommand("copy"); area.remove();
+    }
+    toast("Copied", true);
+  } catch (e) { toast("Could not copy YAML - " + e.message, false); }
+});
+loadScoreSources().then(loadLadder).catch(e => toast("Could not load scores - " + e.message, false));
 setInterval(refreshPools, 5000);
 api("/admin/api/settings").then(render).catch(e => toast("Load failed - " + e.message, false));
 </script>

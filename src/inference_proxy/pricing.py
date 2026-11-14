@@ -21,6 +21,7 @@ create table if not exists usage(
   id integer primary key, ts real, provider text, model text, tier text,
   input_tokens integer, output_tokens integer, cost_usd real, price_fetched_at real);
 create index if not exists usage_ts on usage(ts);
+create table if not exists meta(key text primary key, value text);
 """
 
 
@@ -102,6 +103,14 @@ class PriceStore:
         self.db.execute("delete from prices where provider=? and model=?", (provider, model))
         self.db.execute("insert into prices(provider,model,input_per_m,output_per_m,context,source,fetched_at,status) values(?,?,?,?,?,'manual',?,'active')",
                         (provider, model, input_per_m, output_per_m, context, time.time()))
+        self.db.commit()
+
+    def meta_get(self, key: str) -> str | None:
+        row = self.db.execute("select value from meta where key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def meta_set(self, key: str, value: str) -> None:
+        self.db.execute("insert or replace into meta values(?,?)", (key, value))
         self.db.commit()
 
     # ---- usage ledger ----
