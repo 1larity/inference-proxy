@@ -60,7 +60,7 @@ The four tiers, in plain terms
 Using Claude or Codex instead of an API key
 - Install the app (`claude` or `codex`) and sign in to it once in a terminal.
 - In `config.yaml` add a provider with `type: claude` (or `codex`), list it in the tiers you want, and set `default_model` (`sonnet`, `opus` and `haiku` for Claude). No key is needed.
-- These answer in one piece (no word-by-word streaming) and can't call tools, so leave them out of tiers that serve coding agents which need tools.
+- These answer in one piece (no word-by-word streaming) and can't return tool calls. A request that defines tools (a coding agent, say) is never sent to one: the proxy skips it and uses your API providers, or answers with a clear error if there are none. Naming the provider yourself (`claude_cli` as the model) still sends it there.
 
 Keeping your local model loaded
 - Servers such as LM Studio load whichever model a request names, and swapping on a home PC can take half a minute. Add `pin_model: true` to the local provider (it then only ever uses its `default_model`), or list the endpoint under `pinned_models` in `config.yaml`.

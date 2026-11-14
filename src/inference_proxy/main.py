@@ -238,6 +238,22 @@ def create_app(
             },
         )
 
+    def wants_tools(body: dict) -> bool:
+        return bool(body.get("tools") or body.get("functions"))
+
+    def without_cli_for_tools(plan: list, body: dict) -> list:
+        """A CLI provider cannot return tool calls, so a request that defines tools never goes to one (unless pinned)."""
+        if not wants_tools(body):
+            return plan
+        return [(tier, pool) for tier, pool in plan if pool.config.type not in CLI_TYPES]
+
+    def no_tool_provider() -> JSONResponse:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": "this request defines tools and no provider here can return tool calls "
+                                          "(Claude and Codex CLI providers cannot); add an API provider or pin one explicitly"}},
+        )
+
     async def resolve_plan(
         body: dict,
     ) -> tuple[list[tuple[str, ProviderPool]], frozenset[str], int | None, str, str | None] | JSONResponse:
@@ -263,12 +279,18 @@ def create_app(
             plan = router.plan(tier, required)
             if not plan:
                 return no_capable_provider(required)
+            plan = without_cli_for_tools(plan, body)
+            if not plan:
+                return no_tool_provider()
             return plan, required, difficulty, method, None
 
         if requested in TIERS:
             plan = router.plan(requested, required)
             if not plan:
                 return no_capable_provider(required, requested)
+            plan = without_cli_for_tools(plan, body)
+            if not plan:
+                return no_tool_provider()
             return plan, required, None, "forced", None
 
         pinned_model: str | None = None
