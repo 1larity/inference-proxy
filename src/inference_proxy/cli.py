@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -51,6 +52,18 @@ def _error(status: int, message: str) -> httpx.Response:
     return _response(status, "application/json", json.dumps({"error": {"message": message}}).encode())
 
 
+def forget_session(tool: str, workdir: str) -> None:
+    """Remove the session record a Claude call leaves behind. Codex runs with --ephemeral and writes none.
+
+    Each call runs in its own temporary folder, and Claude files its session under a project named after that folder,
+    so deleting that project removes the whole trace.
+    """
+    if tool != "claude":
+        return
+    project = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(workdir))
+    shutil.rmtree(project, ignore_errors=True)
+
+
 def conversation(messages: list[dict], image_dir: Path) -> tuple[str, list[Path]]:
     """Flatten chat messages to one prompt. Image data URLs are written to files."""
     images: list[Path] = []
@@ -84,7 +97,7 @@ def conversation(messages: list[dict], image_dir: Path) -> tuple[str, list[Path]
 
 def command(tool: str, model: str | None, images: list[Path]) -> list[str]:
     if tool == "codex":
-        cmd = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only"]
+        cmd = ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--sandbox", "read-only"]
         if model:
             cmd += ["-m", model]
         for image in images:
@@ -129,6 +142,8 @@ async def ask_cli(tool: str, prompt: str, model: str | None = None, timeout: flo
             proc.kill()
             await proc.wait()
             raise RuntimeError(f"{tool} did not answer within {timeout:.0f}s") from None
+        finally:
+            forget_session(tool, tmp)
     if proc.returncode:
         raise RuntimeError((err.decode("utf-8", "replace") or out.decode("utf-8", "replace")).strip()[:300] or f"{tool} exited with {proc.returncode}")
     return out.decode("utf-8", "replace").strip()
@@ -156,6 +171,8 @@ async def run_cli(tool: str, model: str | None, body: dict, timeout: float, stre
             return _error(504, f"{tool} did not answer within {timeout:.0f}s")
         except OSError as exc:
             return _error(503, f"could not start {tool}: {exc}")
+        finally:
+            forget_session(tool, tmp)
     text, errtext = out.decode("utf-8", "replace").strip(), err.decode("utf-8", "replace").strip()
     if proc.returncode or not text:
         detail = (errtext or text or f"{tool} exited with {proc.returncode}")[:300]
