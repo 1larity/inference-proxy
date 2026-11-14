@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 inference-proxy = "inference_proxy.main:run"
+inference-proxy-mcp = "inference_proxy.mcp:run"
 
 [dependency-groups]
 dev = [

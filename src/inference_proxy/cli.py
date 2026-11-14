@@ -95,6 +95,22 @@ def conversation(messages: list[dict], image_dir: Path) -> tuple[str, list[Path]
     return prompt, images
 
 
+def current_depth() -> int:
+    """How many delegations deep this process is (0 when unset or unreadable)."""
+    try:
+        return max(0, int(os.environ.get("INFERENCE_PROXY_DEPTH", "0") or 0))
+    except ValueError:
+        return 0
+
+
+def child_env() -> dict[str, str]:
+    """The environment for a CLI the proxy starts. INFERENCE_PROXY_DEPTH counts how many delegations deep we are,
+    so a CLI that has the delegate tool cannot keep calling back into the proxy forever."""
+    env = dict(os.environ)
+    env["INFERENCE_PROXY_DEPTH"] = str(current_depth() + 1)
+    return env
+
+
 def command(tool: str, model: str | None, images: list[Path]) -> list[str]:
     if tool == "codex":
         cmd = ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--sandbox", "read-only"]
@@ -103,7 +119,7 @@ def command(tool: str, model: str | None, images: list[Path]) -> list[str]:
         for image in images:
             cmd += ["-i", str(image)]
         return cmd
-    cmd = ["claude", "-p", "--output-format", "text"]
+    cmd = ["claude", "-p", "--strict-mcp-config", "--output-format", "text"]  # no MCP servers: the CLI answers, it does not delegate
     if model:
         cmd += ["--model", model]
     if images:
@@ -135,7 +151,7 @@ async def ask_cli(tool: str, prompt: str, model: str | None = None, timeout: flo
         cmd += ["--allowedTools", "WebSearch", "WebFetch"]
     with tempfile.TemporaryDirectory(prefix="inference-proxy-") as tmp:
         proc = await asyncio.create_subprocess_exec(*cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                                                    stderr=asyncio.subprocess.PIPE, cwd=tmp)
+                                                    stderr=asyncio.subprocess.PIPE, cwd=tmp, env=child_env())
         try:
             out, err = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout=timeout)
         except asyncio.TimeoutError:
@@ -163,7 +179,7 @@ async def run_cli(tool: str, model: str | None, body: dict, timeout: float, stre
         try:
             proc = await asyncio.create_subprocess_exec(
                 *command(tool, model, images), stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=tmp)
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=tmp, env=child_env())
             out, err = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout=timeout)
         except asyncio.TimeoutError:
             proc.kill()

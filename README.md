@@ -12,6 +12,7 @@ Highlights
 - Media aware: requests with images, video, audio or files (or asking for reasoning) only go to providers that say they can handle them.
 - Spending guardrails: per-tier token limits and request defaults, so a reasoning model can't quietly burn a month of budget on one prompt.
 - Claude and Codex as providers: the command-line apps can answer requests, so a subscription can sit in a tier next to your API keys.
+- Delegation for agents: an MCP server (`inference-proxy-mcp`) lets Claude Code, Codex or Kilo hand small jobs to cheaper models and see which model answered and what it cost.
 - Local models stay loaded: pin an endpoint to one model and the proxy never makes a consumer-grade machine swap models mid-request.
 - A model ladder: independent scores (Epoch AI, optionally Artificial Analysis) and your price table suggest up to 10 rungs from the cheapest capable model to the strongest, and the four tiers to fill from them.
 - Models, not just providers: a different model per tier, automatic stand-ins when a model is retired, and a price table you refresh and approve.
@@ -56,6 +57,13 @@ The four tiers, in plain terms
 - Moderate (3 to 5): everyday coding, writing and analysis.
 - Complex (6 to 8): harder debugging, design questions, longer multi-part jobs.
 - Hardcore (9 to 10): the biggest jobs, sent to your strongest provider.
+
+Letting your main assistant delegate the small jobs
+- Run your main session in Claude Code, Codex or Kilo and connect it to the proxy's delegate tool. For Claude Code: `claude mcp add inference-proxy -- /path/to/inference-proxy/.venv/bin/inference-proxy-mcp` (the proxy itself must be running, and set `INFERENCE_PROXY_URL` or `INFERENCE_PROXY_API_KEY` in the environment if you changed them).
+- The assistant then has a `delegate` tool: it sends a self-contained prompt and gets the answer back with the tier, provider, model, difficulty and cost. Summaries, reformatting, classification, boilerplate and test drafts are the usual jobs. `local_only` keeps a call on your own machine or network for private material.
+- Delegated calls skip the Claude and Codex CLI providers unless the assistant asks for them (`allow_cli`), so it can't hand a job straight back to itself. A big model can still call a bigger one on purpose: name the provider, for example `claude_cli:opus`. Delegation is cut off two levels down.
+- `delegate_status`, `delegate_ladder` and `delegate_usage` show provider health, the model ladder and what delegated work has cost.
+- To run a whole session on one model instead, point the client at the proxy and set the model to that provider (for example `zai53` for its default model, or `zai:glm-5.3-flash`). A named provider is used as asked, with no tier fallback.
 
 Using Claude or Codex instead of an API key
 - Install the app (`claude` or `codex`) and sign in to it once in a terminal.
@@ -119,6 +127,12 @@ Prices and usage
 - Prices are per million tokens in US dollars. A refresh reads `pricing` from each provider's `/models` (the OpenRouter shape) and writes proposals: new, changed or retired. Applying a proposal replaces the active price, and each request is costed at the price active when it ran.
 - The ledger records the tokens each upstream reports (for streams, when the final chunk carries usage) and the cost. `GET /admin/api/usage?days=7` totals it by provider, model and tier.
 - `server.data_db` is the SQLite file that holds both (in memory if unset).
+
+Delegation and request options
+- `inference-proxy-mcp` is a small stdio MCP server that calls the running proxy over HTTP, so pools, cooldowns and prices stay in one place. Its tools are `delegate`, `delegate_status`, `delegate_ladder` and `delegate_usage`. `INFERENCE_PROXY_URL` (default `http://127.0.0.1:8480`) and `INFERENCE_PROXY_API_KEY` set where and how it connects.
+- Any client can send `{"inference_proxy": {"exclude_types": ["claude", "codex"], "local_only": true}}` in a chat request. `exclude_types` removes provider types from the plan, `local_only` keeps only OpenAI-type providers on this machine or network (localhost, private addresses, `.local` names), and no match gives a 400. A pinned provider ignores both. The field is never forwarded upstream.
+- Non-streaming responses add `cost_usd` to the `inference_proxy` object when a price is active for the model and the upstream reported usage.
+- Every CLI the proxy starts gets `INFERENCE_PROXY_DEPTH` one higher than its own, and Claude runs with `--strict-mcp-config` (no MCP servers). The MCP `delegate` tool refuses when the depth is 2 or more.
 
 Endpoint pinning
 - `pinned_models` maps an endpoint's base URL (compared without a trailing slash, ignoring case) to its one model. A provider with `pin_model: true` pins its `default_model`. Two providers pinning one endpoint to different models is a startup error.

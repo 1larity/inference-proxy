@@ -242,16 +242,28 @@ def create_app(
         return bool(body.get("tools") or body.get("functions"))
 
     def without_cli_for_tools(plan: list, body: dict) -> list:
-        """A CLI provider cannot return tool calls, so a request that defines tools never goes to one (unless pinned)."""
-        if not wants_tools(body):
-            return plan
-        return [(tier, pool) for tier, pool in plan if pool.config.type not in CLI_TYPES]
+        """Trim the plan for what this request asks of it (unless the provider is pinned).
+
+        A CLI provider cannot return tool calls, so a request that defines tools never goes to one. A client may also
+        send {"inference_proxy": {"exclude_types": ["claude", "codex"], "local_only": true}} to keep a call off the
+        command-line apps (an agent delegating work must not loop back into itself) or on this network.
+        """
+        options = body.get("inference_proxy") if isinstance(body.get("inference_proxy"), dict) else {}
+        excluded = set(options.get("exclude_types") or [])
+        if wants_tools(body):
+            excluded |= set(CLI_TYPES)
+        plan = [(tier, pool) for tier, pool in plan if pool.config.type not in excluded]
+        if options.get("local_only"):
+            plan = [(tier, pool) for tier, pool in plan
+                    if pool.config.type == "openai" and pool.accounts and all(is_local_url(a.base_url) for a in pool.accounts)]
+        return plan
 
     def no_tool_provider() -> JSONResponse:
         return JSONResponse(
             status_code=400,
-            content={"error": {"message": "this request defines tools and no provider here can return tool calls "
-                                          "(Claude and Codex CLI providers cannot); add an API provider or pin one explicitly"}},
+            content={"error": {"message": "no provider is allowed to take this request: it defines tools (Claude and Codex "
+                                          "CLI providers cannot return tool calls) or asks for exclude_types or local_only "
+                                          "restrictions that no configured provider meets; add a suitable provider or pin one explicitly"}},
         )
 
     async def resolve_plan(
@@ -622,8 +634,8 @@ def create_app(
             )
         await response.aclose()
         if isinstance(data, dict):
-            data["inference_proxy"] = meta
-            prices.record_usage(meta["provider"], meta["model"], meta["tier"], data.get("usage"))
+            cost = prices.record_usage(meta["provider"], meta["model"], meta["tier"], data.get("usage"))
+            data["inference_proxy"] = {**meta, "cost_usd": round(cost, 6)} if cost is not None else meta
         return JSONResponse(status_code=200, content=data, headers=meta_headers(meta))
 
     def relay_upstream_error(status: int, error_body: bytes, provider: str) -> JSONResponse:
