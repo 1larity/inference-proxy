@@ -79,7 +79,7 @@ providers:
         note: overflow account
     quota_cooldown_seconds: 600 # parked this long after 429/402
     auth_failure_cooldown_seconds: 3600
-    # Spending guardrails — reasoning models can burn huge budgets thinking:
+    # Spending guardrails - reasoning models can burn huge budgets thinking:
     # max_tokens_cap: 8192                                    # clamp/inject max_tokens
     # extra_body: {"thinking": {"type": "disabled"}}          # merged into every request
 
@@ -92,7 +92,7 @@ providers:
     quota_cooldown_seconds: 600
 
   kilo:
-    # Kilo Gateway — copy the OpenAI-compatible base URL and key from your
+    # Kilo Gateway - copy the OpenAI-compatible base URL and key from your
     # dashboard/provider settings.
     base_url: ${KILO_GATEWAY_URL:-https://kilo.ai/api/gateway/v1}
     default_model: ${KILO_MODEL:-claude-sonnet-4-5}

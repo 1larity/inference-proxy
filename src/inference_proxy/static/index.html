@@ -104,7 +104,7 @@
         <div><label>Complex threshold (score ≥)</label><input type="number" id="routing.complex_min" min="1" max="10"></div>
         <div><label>Hardcore threshold (score ≥)</label><input type="number" id="routing.hardcore_min" min="1" max="10"></div>
         <div><label>Fallback difficulty (judge unreachable)</label><input type="number" id="routing.fallback_difficulty" min="1" max="10"></div>
-        <div><label>Cooldown seconds shown live below</label><input type="text" disabled placeholder="—"></div>
+        <div><label>Cooldown seconds shown live below</label><input type="text" disabled placeholder="-"></div>
       </div>
       <div class="check"><input type="checkbox" id="routing.fallback_to_other_tiers">
         <span>Fall back to neighbouring tiers when a tier is exhausted</span></div>
@@ -562,7 +562,7 @@ async function save() {
     const view = await api("/admin/api/settings", {method: "PUT", body: JSON.stringify(collect())});
     render(view);
     toast("Settings saved and applied", true);
-  } catch (e) { toast("Save failed — " + e.message, false); }
+  } catch (e) { toast("Save failed - " + e.message, false); }
 }
 
 async function refreshPools() {
@@ -577,7 +577,7 @@ async function refreshPools() {
           a.id,
           a.note || "",
           a.healthy ? "healthy" : "cooling",
-          a.healthy ? "—" : a.cooldown_remaining_seconds + "s",
+          a.healthy ? "-" : a.cooldown_remaining_seconds + "s",
           String(a.consecutive_failures),
           String(a.in_flight),
           String(a.total_requests),
@@ -601,7 +601,7 @@ async function refreshPools() {
           try {
             await api(`/admin/api/pools/${pool.name}/accounts/${a.id.split("#")[1]}/reset`, {method: "POST"});
             refreshPools();
-          } catch (e) { toast("Reset failed — " + e.message, false); }
+          } catch (e) { toast("Reset failed - " + e.message, false); }
         });
         actions.appendChild(reset);
         tr.appendChild(actions);
@@ -625,11 +625,11 @@ async function refreshRecent() {
       const cells = [
         new Date(r.ts * 1000).toLocaleTimeString(),
         r.model,
-        r.difficulty === null || r.difficulty === undefined ? "—" : String(r.difficulty),
-        r.tier || "—",
-        r.provider || "—",
-        r.account || "—",
-        r.upstream_model || "—",
+        r.difficulty === null || r.difficulty === undefined ? "-" : String(r.difficulty),
+        r.tier || "-",
+        r.provider || "-",
+        r.account || "-",
+        r.upstream_model || "-",
         String(r.status),
         String(r.ms) + (r.stream ? " (stream)" : ""),
       ];
@@ -670,12 +670,12 @@ async function runTest() {
     metaLine.className = "meta";
     metaLine.textContent =
       `tier=${meta.tier} provider=${meta.provider} account=${meta.account} ` +
-      `difficulty=${meta.difficulty} (${meta.difficulty_method}) model=${meta.model} — ${ms}ms`;
+      `difficulty=${meta.difficulty} (${meta.difficulty_method}) model=${meta.model} - ${ms}ms`;
     const text = document.createElement("div");
     text.textContent = content.slice(0, 500) || "(empty)";
     out.append(metaLine, text);
   } catch (e) {
-    out.textContent = "Request failed — " + e.message;
+    out.textContent = "Request failed - " + e.message;
   }
 }
 
@@ -742,12 +742,12 @@ async function save() {
     const view = await api("/admin/api/settings", {method: "PUT", body: JSON.stringify(collectWithPanelStates())});
     render(view);
     toast("Settings saved and applied", true);
-  } catch (e) { toast("Save failed — " + e.message, false); }
+  } catch (e) { toast("Save failed - " + e.message, false); }
 }
 
 refreshPools();
 setInterval(refreshPools, 5000);
-api("/admin/api/settings").then(render).catch(e => toast("Load failed — " + e.message, false));
+api("/admin/api/settings").then(render).catch(e => toast("Load failed - " + e.message, false));
 </script>
 </body>
 </html>

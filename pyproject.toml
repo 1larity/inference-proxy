@@ -3,6 +3,8 @@ name = "inference-proxy"
 version = "0.1.0"
 description = "Difficulty-aware AI proxy: local LM for easy tasks, account-rotating external providers for the rest"
 requires-python = ">=3.12"
+license = "CC-BY-NC-SA-4.0"
+license-files = ["LICENSE"]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.34",

@@ -8,6 +8,6 @@
 - tests/: pytest + pytest-asyncio, upstreams mocked via httpx.MockTransport (see tests/conftest.py)
 
 # Notes
-- ui-settings.json is the UI settings overlay (contains plaintext keys — never commit)
+- ui-settings.json is the UI settings overlay (contains plaintext keys - never commit)
 - Settings hot-apply at runtime; tests default settings_file=None to avoid stray files
-- Providers are generic: any name/count; overlay deletion marker is "providers": {"name": null}; tiers are fixed easy/moderate/hard
+- Providers are generic: any name/count; overlay deletion marker is "providers": {"name": null}; tiers are fixed trivial/moderate/complex/hardcore

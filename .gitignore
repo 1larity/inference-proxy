@@ -5,3 +5,5 @@ config.yaml
 proxy-state.json
 ui-settings.json
 .pytest_cache/
+.kilo/
+.vscode/
